@@ -36,6 +36,9 @@
   ],
   "author": "AOSSIE",
   "license": "GPL-3.0",
+  "engines": {
+    "node": ">=20"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/AOSSIE-Org/IndexedDB-Import-Export.git"
