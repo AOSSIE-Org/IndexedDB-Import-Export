@@ -85,7 +85,7 @@ export function serialize(value: unknown): unknown {
 
   // Recursively process plain objects
   if (isPlainObject(value)) {
-    const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value)) {
       result[key] = serialize(value[key]);
     }
@@ -130,7 +130,7 @@ export function deserialize(value: unknown): unknown {
 
   // Recursively process plain objects
   if (isPlainObject(value)) {
-    const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value)) {
       result[key] = deserialize(value[key]);
     }

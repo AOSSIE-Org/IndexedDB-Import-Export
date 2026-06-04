@@ -52,7 +52,7 @@ export interface ExportFormat {
   /** Schema definitions for each object store, keyed by store name. */
   schema: Record<string, StoreSchema>;
   /** Serialized records for each object store, keyed by store name. */
-  stores: Record<string, unknown[]>;
+  stores: Record<string, Array<{ key: unknown; value: unknown }>>;
 }
 
 /**

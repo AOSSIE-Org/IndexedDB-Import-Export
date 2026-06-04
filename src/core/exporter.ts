@@ -38,15 +38,18 @@ function extractStoreSchema(store: IDBObjectStore): StoreSchema {
  * @param store - The IDBObjectStore to read records from.
  * @returns A promise that resolves to an array of serialized records.
  */
-function readAllRecords(store: IDBObjectStore): Promise<unknown[]> {
+function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; value: unknown }>> {
   return new Promise((resolve, reject) => {
-    const records: unknown[] = [];
+    const records: Array<{ key: unknown; value: unknown }> = [];
     const request = store.openCursor();
 
     request.onsuccess = () => {
       const cursor = request.result;
       if (cursor) {
-        records.push(serialize(cursor.value));
+        records.push({
+          key: serialize(cursor.primaryKey),
+          value: serialize(cursor.value),
+        });
         cursor.continue();
       } else {
         resolve(records);
@@ -124,7 +127,7 @@ export async function exportDB(options: ExportOptions): Promise<ExportFormat> {
     // Open a single read-only transaction across all target stores
     const transaction = db.transaction(targetStores, 'readonly');
     const schema: Record<string, StoreSchema> = {};
-    const stores: Record<string, unknown[]> = {};
+    const stores: Record<string, Array<{ key: unknown; value: unknown }>> = {};
 
     // Process each store: extract schema and read records
     const storePromises = targetStores.map(async (storeName) => {
