@@ -36,12 +36,15 @@ function base64ToUint8Array(base64: string): Uint8Array {
  * Check whether a value is a plain object (not an array, Date, Uint8Array, etc.).
  */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.getPrototypeOf(value) === Object.prototype
-  );
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  // Accept both standard and null-prototype objects. `serialize` builds
+  // records with `Object.create(null)` as a prototype-pollution defense, so
+  // `deserialize` must also recurse into them — otherwise nested tagged values
+  // are left encoded on a direct `serialize` -> `deserialize` round-trip.
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 /**
@@ -60,8 +63,8 @@ function isTaggedValue(value: unknown): value is TaggedValue {
  *
  * Currently handles:
  * - `Uint8Array` → `{ __type: "u8", value: "<base64>" }`
- *
- * Hooks for future tagged types (bigint, Date) can be added here by Rohan's PR.
+ * - `bigint` → `{ __type: "bigint", value: "<digits>" }`
+ * - `Date` → `{ __type: "date", value: "<ISO 8601>" }`
  *
  * JSON-safe primitives (string, number, boolean, null) pass through unchanged.
  * Plain objects and arrays are recursively processed.
@@ -75,8 +78,13 @@ export function serialize(value: unknown): unknown {
     return { __type: 'u8', value: uint8ArrayToBase64(value) } satisfies TaggedValue;
   }
 
-  // TODO: bigint serialization (Rohan's PR)
-  // TODO: Date serialization (Rohan's PR)
+  if (typeof value === 'bigint') {
+    return { __type: 'bigint', value: value.toString() } satisfies TaggedValue;
+  }
+
+  if (value instanceof Date) {
+    return { __type: 'date', value: value.toISOString() } satisfies TaggedValue;
+  }
 
   // Recursively process arrays
   if (Array.isArray(value)) {
@@ -101,8 +109,8 @@ export function serialize(value: unknown): unknown {
  *
  * Currently handles:
  * - `{ __type: "u8", value: "<base64>" }` → `Uint8Array`
- *
- * Hooks for future tagged types (bigint, Date) can be added here by Rohan's PR.
+ * - `{ __type: "bigint", value: "<digits>" }` → `bigint`
+ * - `{ __type: "date", value: "<ISO 8601>" }` → `Date`
  *
  * @param value - The value to deserialize.
  * @returns The deserialized value with native types restored.
@@ -114,8 +122,11 @@ export function deserialize(value: unknown): unknown {
       case 'u8':
         return base64ToUint8Array(value.value);
 
-      // TODO: bigint deserialization (Rohan's PR)
-      // TODO: Date deserialization (Rohan's PR)
+      case 'bigint':
+        return BigInt(value.value);
+
+      case 'date':
+        return new Date(value.value);
 
       default:
         // Unknown tag — return as-is (forward compatibility)
