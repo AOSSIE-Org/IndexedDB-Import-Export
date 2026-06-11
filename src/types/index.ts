@@ -30,7 +30,7 @@ export interface StoreSchema {
  * Centralised here so encode/decode reference the same constants instead of
  * scattered string literals (avoids typos and eases adding new tags).
  */
-export const TAGS = {
+export const SERIALIZATION_TAGS = {
   UINT8: 'u8',
   BIGINT: 'bigint',
   DATE: 'date',

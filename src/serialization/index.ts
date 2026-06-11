@@ -1,4 +1,4 @@
-import { TAGS } from '../types/index.js';
+import { SERIALIZATION_TAGS } from '../types/index.js';
 import type { TaggedValue } from '../types/index.js';
 
 /**
@@ -76,15 +76,15 @@ function isTaggedValue(value: unknown): value is TaggedValue {
 export function serialize(value: unknown): unknown {
   // Uint8Array → tagged base64
   if (value instanceof Uint8Array) {
-    return { __type: TAGS.UINT8, value: uint8ArrayToBase64(value) } satisfies TaggedValue;
+    return { __type: SERIALIZATION_TAGS.UINT8, value: uint8ArrayToBase64(value) } satisfies TaggedValue;
   }
 
   if (typeof value === 'bigint') {
-    return { __type: TAGS.BIGINT, value: value.toString() } satisfies TaggedValue;
+    return { __type: SERIALIZATION_TAGS.BIGINT, value: value.toString() } satisfies TaggedValue;
   }
 
   if (value instanceof Date) {
-    return { __type: TAGS.DATE, value: value.toISOString() } satisfies TaggedValue;
+    return { __type: SERIALIZATION_TAGS.DATE, value: value.toISOString() } satisfies TaggedValue;
   }
 
   // Recursively process arrays
@@ -120,13 +120,13 @@ export function deserialize(value: unknown): unknown {
   // Check for tagged values first
   if (isTaggedValue(value)) {
     switch (value.__type) {
-      case TAGS.UINT8:
+      case SERIALIZATION_TAGS.UINT8:
         return base64ToUint8Array(value.value);
 
-      case TAGS.BIGINT:
+      case SERIALIZATION_TAGS.BIGINT:
         return BigInt(value.value);
 
-      case TAGS.DATE: {
+      case SERIALIZATION_TAGS.DATE: {
         const date = new Date(value.value);
         if (Number.isNaN(date.getTime())) {
           throw new RangeError(`Invalid date value in backup: "${value.value}"`);
