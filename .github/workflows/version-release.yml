@@ -14,12 +14,33 @@ jobs:
   release:
     if: ${{ github.repository_owner == 'AOSSIE-Org' }}
     runs-on: ubuntu-latest
-    
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      released: ${{ steps.publish_release.outputs.released }}
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify push is from org member
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: membership } = await github.rest.orgs.getMembershipForUser({
+              org: 'AOSSIE-Org',
+              username: context.actor,
+            }).catch(() => ({ data: { state: 'not_found' } }));
+
+            if (membership.state !== 'active') {
+              core.setFailed(`Actor '${context.actor}' is not an active member of AOSSIE-Org. Aborting release.`);
+            } else {
+              console.log(`✓ Actor '${context.actor}' is a verified AOSSIE-Org member.`);
+            }
 
       - name: Read VERSION file
         id: get_version
@@ -54,27 +75,29 @@ jobs:
           git tag -a "v$VERSION" -m "Release version $VERSION"
           git push origin "v$VERSION"
           echo "✓ Created and pushed tag v$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Find and Publish Draft Release
         id: publish_release
-        uses: actions/github-script@v9
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const version = 'v${{ steps.get_version.outputs.version }}';
-            
+
             // Get all releases
             const { data: releases } = await github.rest.repos.listReleases({
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
-            
+
             // Find the draft release
             const draftRelease = releases.find(release => release.draft === true);
-            
+
             if (draftRelease) {
               console.log(`Found draft release: ${draftRelease.name}`);
-              
+
               // Update and publish the draft release
               await github.rest.repos.updateRelease({
                 owner: context.repo.owner,
@@ -84,24 +107,24 @@ jobs:
                 name: version,
                 draft: false,
               });
-              
+
               console.log(`✓ Published draft release as ${version}`);
               core.setOutput('released', 'true');
             } else {
-              console.log('⚠️ No draft release found. Please ensure release-drafter has created a draft release first.');
-              core.setOutput('released', 'false');
-              core.setFailed('No draft release found to publish');
-              
-              //Uncomment below to auto-create release if no draft exists but also check release-drafter config first(why not working)
-              // await github.rest.repos.createRelease({
-              //   owner: context.repo.owner,
-              //   repo: context.repo.repo,
-              //   tag_name: version,
-              //   name: version,
-              //   body: `## Release ${version}\n\nThis release was automatically created when the VERSION file was updated.`,
-              //   draft: false,
-              //   prerelease: false,
-              // });
+              console.log('⚠️ No draft release found. Creating release automatically.');
+
+              await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: version,
+                name: version,
+                body: `## Release ${version}\n\nThis release was automatically created when the VERSION file was updated.`,
+                draft: false,
+                prerelease: false,
+              });
+
+              console.log(`✓ Created and published release ${version}`);
+              core.setOutput('released', 'true');
             }
 
       - name: Release Summary
@@ -115,9 +138,59 @@ jobs:
           else
             echo "- **GitHub Release:** ✗ (no draft found)" >> $GITHUB_STEP_SUMMARY
           fi
+
+  publish:
+    needs: release
+    if: ${{ github.repository_owner == 'AOSSIE-Org' && needs.release.outputs.released == 'true' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    environment: npm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Sync version from VERSION file
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          echo "Syncing package.json version to $VERSION"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "✓ package.json version set to $VERSION"
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPMJS_TOKEN }}
+
+      - name: Publish Summary
+        run: |
+          echo "### npm Publish Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.publish_release.outputs.released }}" = "true" ]; then
-            echo "Release completed successfully!" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Release failed - no draft release was found to publish" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "- **Package:** @aossie-org/idb-backup" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry:** https://www.npmjs.com/package/@aossie-org/idb-backup" >> $GITHUB_STEP_SUMMARY
+          echo "- **Provenance:** ✓ (supply-chain attestation enabled)" >> $GITHUB_STEP_SUMMARY
