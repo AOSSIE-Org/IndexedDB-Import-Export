@@ -55,7 +55,7 @@
     "idb": "^8.0.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.0.0",
+    "@eslint/js": "^10.0.1",
     "eslint": "^9.0.0",
     "happy-dom": "^20.9.0",
     "prettier": "^3.0.0",
