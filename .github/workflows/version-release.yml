@@ -74,11 +74,10 @@ jobs:
           VERSION="${{ steps.get_version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git tag -a "v$VERSION" -m "Release version $VERSION"
           git push origin "v$VERSION"
           echo "✓ Created and pushed tag v$VERSION"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Find and Publish Draft Release
         id: publish_release
@@ -161,7 +160,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
