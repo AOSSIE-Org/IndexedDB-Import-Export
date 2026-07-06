@@ -13,7 +13,7 @@
 <!-- Badges -->
 <div align="center">
 
-[![npm version](https://img.shields.io/npm/v/aossie-idb-backup?style=for-the-badge&color=228B22)](https://www.npmjs.com/package/aossie-idb-backup)
+[![npm version](https://img.shields.io/npm/v/@aossie-org/idb-backup?style=for-the-badge&color=228B22)](https://www.npmjs.com/package/@aossie-org/idb-backup)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?style=for-the-badge)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AOSSIE-Org/IndexedDB-Import-Export/badge)](https://scorecard.dev/viewer/?uri=github.com/AOSSIE-Org/IndexedDB-Import-Export)
 
@@ -40,7 +40,7 @@
 ---
 
 <div align="center">
-<h1>aossie-idb-backup</h1>
+<h1>@aossie-org/idb-backup</h1>
 <p>A framework-agnostic, lightweight TypeScript library for exporting and importing IndexedDB databases via type-tagged JSON.</p>
 </div>
 
@@ -48,7 +48,7 @@
 
 ## What is this?
 
-`aossie-idb-backup` provides a simple, portable way to **back up and restore IndexedDB databases** in the browser. It produces a self-describing JSON file that preserves data types that `JSON.stringify` normally corrupts — such as `Uint8Array`, `bigint`, and `Date`.
+`@aossie-org/idb-backup` provides a simple, portable way to **back up and restore IndexedDB databases** in the browser. It produces a self-describing JSON file that preserves data types that `JSON.stringify` normally corrupts — such as `Uint8Array`, `bigint`, and `Date`.
 
 The library is designed to be **framework-agnostic**: it works in any browser environment and includes SSR safety guards for server-rendered frameworks like Next.js and Nuxt.
 
@@ -82,7 +82,7 @@ The library is designed to be **framework-agnostic**: it works in any browser en
 
 ```mermaid
 graph TD
-    A[aossie-idb-backup] --> B[src/core]
+    A[@aossie-org/idb-backup] --> B[src/core]
     A --> C[src/serialization]
     A --> D[src/types]
     A --> E[src/utils]
@@ -96,7 +96,7 @@ graph TD
     D --> D1["index.ts — ExportFormat, TaggedValue, etc."]
 
     E --> E1["ssr.ts — isBrowser(), assertBrowser()"]
-    E --> E2["file.ts — downloadJSON(), readJSONFile()"]
+    E --> E2["file.ts — downloadJSON(), readFileAsJSON()"]
 ```
 
 ---
@@ -123,10 +123,13 @@ The library produces a self-describing JSON structure:
   "stores": {
     "messages": [
       {
-        "id": "msg-001",
-        "payload": { "__type": "u8", "value": "SGVsbG8gV29ybGQ=" },
-        "timestamp": { "__type": "date", "value": "2025-06-01T12:00:00.000Z" },
-        "fee": { "__type": "bigint", "value": "1000000000000000000" }
+        "key": "msg-001",
+        "value": {
+          "id": "msg-001",
+          "payload": { "__type": "u8", "value": "SGVsbG8gV29ybGQ=" },
+          "timestamp": { "__type": "date", "value": "2025-06-01T12:00:00.000Z" },
+          "fee": { "__type": "bigint", "value": "1000000000000000000" }
+        }
       }
     ]
   }
@@ -199,7 +202,7 @@ npm test
 ### Export a Database
 
 ```typescript
-import { exportDB } from 'aossie-idb-backup';
+import { exportDB } from '@aossie-org/idb-backup';
 
 const backup = await exportDB({
   dbName: 'my-app-db',
@@ -213,7 +216,7 @@ console.log(JSON.stringify(backup, null, 2));
 ### Import a Database
 
 ```typescript
-import { importDB } from 'aossie-idb-backup';
+import { importDB } from '@aossie-org/idb-backup';
 
 // Overwrite: delete existing data and restore from backup
 await importDB({
@@ -233,7 +236,7 @@ await importDB({
 ### Download as JSON File
 
 ```typescript
-import { downloadJSON } from 'aossie-idb-backup';
+import { downloadJSON } from '@aossie-org/idb-backup';
 
 downloadJSON(backup, 'my-backup.json');
 ```
@@ -241,11 +244,11 @@ downloadJSON(backup, 'my-backup.json');
 ### Read a JSON Backup File
 
 ```typescript
-import { readJSONFile } from 'aossie-idb-backup';
+import { readFileAsJSON } from '@aossie-org/idb-backup';
 
 const fileInput = document.querySelector<HTMLInputElement>('#file-input');
 const file = fileInput!.files![0];
-const backup = await readJSONFile(file);
+const backup = await readFileAsJSON(file);
 ```
 
 ---
