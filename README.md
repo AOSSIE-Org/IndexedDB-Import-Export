@@ -82,10 +82,10 @@ The library is designed to be **framework-agnostic**: it works in any browser en
 
 ```mermaid
 graph TD
-    A[@aossie-org/idb-backup] --> B[src/core]
-    A --> C[src/serialization]
-    A --> D[src/types]
-    A --> E[src/utils]
+    A["@aossie-org/idb-backup"] --> B["src/core"]
+    A --> C["src/serialization"]
+    A --> D["src/types"]
+    A --> E["src/utils"]
 
     B --> B1["exporter.ts — exportDB()"]
     B --> B2["importer.ts — importDB()"]

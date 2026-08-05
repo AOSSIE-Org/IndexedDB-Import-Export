@@ -1,6 +1,6 @@
 {
   "name": "@aossie-org/idb-backup",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A framework-agnostic, lightweight TypeScript library for exporting and importing IndexedDB databases via type-tagged JSON.",
   "type": "module",
   "main": "./dist/index.cjs",
