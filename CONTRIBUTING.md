@@ -69,7 +69,7 @@ What we expect:
 ### Prerequisites
 
 - Node.js 20 or later
-- npm (or yarn/pnpm)
+- npm (the commands below use npm)
 
 ### Setup
 

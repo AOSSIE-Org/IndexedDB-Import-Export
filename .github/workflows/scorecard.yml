@@ -47,6 +47,9 @@ jobs:
           egress-policy: block
           # MAINTAINER CHOICE: Add project-specific endpoints if your stack
           # needs private registries, package mirrors, etc.
+          # Note: *.blob.core.windows.net is a wildcard because actions/upload-artifact
+          # uploads to a dynamic Azure Blob Storage host per run — it can't be narrowed
+          # to one fixed hostname. api.scorecard.dev alone covers Scorecard publishing.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
