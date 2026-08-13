@@ -23,7 +23,6 @@
 ## Score Summary
 
 <!-- Auto-updated by checklist-score.yml workflow — do not edit manually -->
-
 | Category           | Met | Total | Status |
 |--------------------|-----|-------|--------|
 | Basics             | 8   | 8     | ✅     |
@@ -33,7 +32,6 @@
 | Security           | 6   | 9     | 🟡     |
 | Analysis           | 3   | 7     | 🔴     |
 | **Total**          | **32** | **49** | **65%** |
-
 ---
 
 ## 🏗️ Basics
