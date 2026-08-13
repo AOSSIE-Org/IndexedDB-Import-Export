@@ -1,36 +1,36 @@
 {
   "schemaVersion": 1,
   "label": "Best Practices",
-  "message": "0%",
+  "message": "65%",
   "schema": "aossie-best-practices-v1",
-  "updated": "2026-05-28",
-  "met": 0,
+  "updated": "2026-08-13",
+  "met": 32,
   "total": 49,
-  "percent": 0,
-  "color": "red",
+  "percent": 65,
+  "color": "yellow",
   "categories": {
     "basics": {
-      "met": 0,
+      "met": 8,
       "total": 8
     },
     "change_control": {
-      "met": 0,
+      "met": 5,
       "total": 6
     },
     "reporting": {
-      "met": 0,
+      "met": 5,
       "total": 8
     },
     "quality": {
-      "met": 0,
+      "met": 5,
       "total": 11
     },
     "security": {
-      "met": 0,
+      "met": 6,
       "total": 9
     },
     "analysis": {
-      "met": 0,
+      "met": 3,
       "total": 7
     }
   }

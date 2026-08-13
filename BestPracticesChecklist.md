@@ -23,17 +23,15 @@
 ## Score Summary
 
 <!-- Auto-updated by checklist-score.yml workflow — do not edit manually -->
-
 | Category           | Met | Total | Status |
 |--------------------|-----|-------|--------|
-| Basics             | 8   | 8     | 🟢     |
+| Basics             | 8   | 8     | ✅     |
 | Change Control     | 5   | 6     | 🟡     |
-| Reporting          | 3   | 8     | 🔴     |
-| Quality            | 5   | 11    | 🔴     |
-| Security           | 0   | 9     | 🔴     |
-| Analysis           | 2   | 7     | 🔴     |
-| **Total**          | **23** | **49** | **47%** |
-
+| Reporting          | 5   | 8     | 🟡     |
+| Quality            | 5   | 11     | 🔴     |
+| Security           | 6   | 9     | 🟡     |
+| Analysis           | 3   | 7     | 🔴     |
+| **Total**          | **32** | **49** | **65%** |
 ---
 
 ## 🏗️ Basics
