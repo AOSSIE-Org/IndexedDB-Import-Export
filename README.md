@@ -268,8 +268,7 @@ Contributions are welcome! If you would like to contribute, please refer to [CON
 
 ## Maintainers
 
-- [Atharva0506](https://github.com/Atharva0506)
-- [rohans02](https://github.com/rohans02)
+See [MAINTAINERS.md](./MAINTAINERS.md) for the full list of Mentors and Maintainers for this repository.
 
 ---
 

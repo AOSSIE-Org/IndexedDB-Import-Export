@@ -1,4 +1,4 @@
-# Contributing to TODO: Project Name
+# Contributing to IndexedDB Import/Export
 
 ⭐ First off, thank you for considering contributing to this project! ⭐
 
@@ -9,7 +9,7 @@ We welcome contributions from everyone. By participating in this project, you ag
 **All project communication MUST happen on Discord. We do not pay attention to GitHub notifications.**
 
 - Join our [Discord server](https://discord.gg/hjUhu33uAn) before starting any work
-- Post your PR/issue updates in the relevant Discord channel (**MANDATORY**)
+- Post your PR/issue updates in the [#indexeddb-import-export channel](https://discord.com/channels/1022871757289422898/1509409386102259803) (**MANDATORY**)
 - All discussions, questions, and updates should be on Discord
 - GitHub is for code only - Discord is for communication
 
@@ -68,36 +68,40 @@ What we expect:
 
 ### Prerequisites
 
-TODO: List prerequisites specific to your project
+- Node.js 20 or later
+- npm (the commands below use npm)
 
 ### Setup
 
 1. **Fork the Repository**
+
    ```bash
    # Click the 'Fork' button at the top right of this page
    ```
 
 2. **Clone Your Fork**
+
    ```bash
-   git clone https://github.com/YOUR_USERNAME/TODO.git
-   cd TODO
+   git clone https://github.com/YOUR_USERNAME/IndexedDB-Import-Export.git
+   cd IndexedDB-Import-Export
    ```
 
 3. **Add Upstream Remote**
+
    ```bash
-   git remote add upstream https://github.com/AOSSIE-Org/TODO.git
+   git remote add upstream https://github.com/AOSSIE-Org/IndexedDB-Import-Export.git
    ```
 
 4. **Install Dependencies**
+
    ```bash
    npm install
-   # or yarn install
-   # or pnpm install
    ```
 
-5. **Run the Project**
+5. **Build the Library**
+
    ```bash
-   npm run dev
+   npm run build
    ```
 
 ## 🔄 Development Workflow
@@ -121,12 +125,12 @@ git checkout -b fix/your-bug-fix
 
 ### 3. Test Your Changes
 
-TODO: Add project-specific testing instructions
+Run the test suite (Vitest), linter, and format check before opening a PR:
 
 ```bash
-npm test
-# or
-npm run lint
+npm test               # run the Vitest suite
+npm run lint            # ESLint
+npm run format:check     # Prettier check
 ```
 
 ### 4. Commit Your Changes
@@ -210,7 +214,7 @@ Steps to test the changes
 
 ### After Submission
 
-- Post your PR in the project's Discord channel for visibility(**IMPORTANT**)
+- Post your PR in the [#indexeddb-import-export channel](https://discord.com/channels/1022871757289422898/1509409386102259803) for visibility(**IMPORTANT**)
 - Respond to review comments promptly
 - Make requested changes in new commits
 - Be patient - maintainers will review when available
@@ -223,7 +227,7 @@ Steps to test the changes
 
 ## 📝 Code Style Guidelines
 
-TODO: Add project-specific code style guidelines
+This library has a single runtime dependency (`idb`) — discuss any new runtime dependency in an issue first; devDependencies for build/test tooling are fine. It ships both ESM and CJS builds with TypeScript declarations (via `tsup`), so avoid APIs that only work in one module format.
 
 ### General Guidelines
 
@@ -538,4 +542,4 @@ If you encounter issues not covered here:
 - Check for existing PRs before starting to avoid duplication, as there might PRs that didn't mention the related issue
 
 
-Thank you for contributing to TODO! Your efforts help make this project better for everyone. 🚀
+Thank you for contributing to IndexedDB Import/Export! Your efforts help make this project better for everyone. 🚀

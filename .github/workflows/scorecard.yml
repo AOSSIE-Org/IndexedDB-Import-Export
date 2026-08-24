@@ -14,7 +14,7 @@ on:
 
   push:
     # Branch-Protection check ONLY works on the default branch(Must match your actual default branch).
-    branches: ["dev"]
+    branches: ["main"]
 
   workflow_dispatch:
 
@@ -32,11 +32,10 @@ jobs:
        github.event_name == 'pull_request')
 
     permissions:
+      contents: read # required for actions/checkout to read repository contents
       security-events: write
       id-token: write
       actions: read
-      # Uncomment for PRIVATE repositories.
-      # contents: read
 
     steps:
       - name: "Harden Runner"
@@ -48,6 +47,9 @@ jobs:
           egress-policy: block
           # MAINTAINER CHOICE: Add project-specific endpoints if your stack
           # needs private registries, package mirrors, etc.
+          # Note: *.blob.core.windows.net is a wildcard because actions/upload-artifact
+          # uploads to a dynamic Azure Blob Storage host per run — it can't be narrowed
+          # to one fixed hostname. api.scorecard.dev alone covers Scorecard publishing.
           allowed-endpoints: >
             github.com:443
             api.github.com:443
@@ -61,6 +63,9 @@ jobs:
             rekor.sigstore.dev:443
             auth.docker.io:443
             api.scorecard.dev:443
+            token.actions.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+            *.blob.core.windows.net:443
 
       - name: "Checkout code"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
