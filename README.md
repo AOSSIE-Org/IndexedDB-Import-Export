@@ -231,7 +231,19 @@ await importDB({
   backupData: backup,
   strategy: 'merge',
 });
+
+// Selective restore: only repopulate the listed stores
+await importDB({
+  dbName: 'my-app-db',
+  backupData: backup,
+  strategy: 'overwrite',
+  storeNames: ['messages', 'contacts'],
+});
 ```
+
+> **Note:** `storeNames` filters records only. The schema for every store in the backup is still
+> created, so a store left out of the list exists after the import — it is just not populated
+> (empty under `overwrite`, unchanged under `merge`). Names not present in the backup are ignored.
 
 ### Download as JSON File
 

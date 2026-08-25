@@ -94,4 +94,16 @@ export interface ImportOptions {
    * - `"merge"` — Keep existing data and add/update records from the backup.
    */
   strategy: 'overwrite' | 'merge';
+  /**
+   * Optional list of object store names to restore records into.
+   * If omitted, records from every store in the backup are restored.
+   *
+   * Store names present in `storeNames` but absent from the backup are ignored.
+   * Passing an empty array restores no records at all.
+   *
+   * This filters records only — the schema for every store in the backup is
+   * still created, so stores left out of `storeNames` exist but stay empty
+   * (under `"overwrite"`) or keep their current contents (under `"merge"`).
+   */
+  storeNames?: string[];
 }
