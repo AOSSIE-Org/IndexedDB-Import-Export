@@ -272,6 +272,14 @@ See [MAINTAINERS.md](./MAINTAINERS.md) for the full list of Mentors and Maintain
 
 ---
 
+## Privacy
+
+The library collects no data, makes no network requests, and stores everything locally on the user's
+device. See [PRIVACY.md](./PRIVACY.md) for details — including a note on the fact that exported
+backups are plain, unencrypted JSON.
+
+---
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0**.

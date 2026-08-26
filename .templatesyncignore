@@ -6,6 +6,7 @@
 
 # Repository-specific files that should not be synced
 README.md
+PRIVACY.md
 LICENSE
 
 # GitHub workflows are not synced by default due to GitHub policy
