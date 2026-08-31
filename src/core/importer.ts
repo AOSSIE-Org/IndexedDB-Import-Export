@@ -276,6 +276,9 @@ function insertRecords(
  * @param options.dbName - The name of the target IndexedDB database.
  * @param options.backupData - The parsed ExportFormat JSON to import.
  * @param options.strategy - Either `"overwrite"` or `"merge"`.
+ * @param options.storeNames - Optional list of store names to restore records into. If omitted,
+ *   records from every store in the backup are restored. Schema creation is unaffected, so stores
+ *   left out of the list still exist after the import — they are simply not populated.
  * @returns A promise that resolves when the import is complete.
  *
  * @example
@@ -293,20 +296,32 @@ function insertRecords(
  *   backupData: backup,
  *   strategy: 'merge',
  * });
+ *
+ * // Selective restore: rebuild the full schema, but only repopulate user data
+ * // and leave derived cache stores empty so the app refetches them.
+ * await importDB({
+ *   dbName: 'my-app-db',
+ *   backupData: backup,
+ *   strategy: 'overwrite',
+ *   storeNames: ['portfolioPositions', 'portfolioTransactions'],
+ * });
  * ```
  */
 export async function importDB(options: ImportOptions): Promise<void> {
-  const { dbName, backupData, strategy } = options;
+  const { dbName, backupData, strategy, storeNames } = options;
 
   const db = await openDatabaseForImport(dbName, backupData, strategy);
 
   try {
     // Determine which stores to populate from the backup
-    const backupStoreNames = Object.keys(backupData.stores);
+    const selected = storeNames ? new Set(storeNames) : null;
     const dbStoreNames = Array.from(db.objectStoreNames);
 
-    // Only insert into stores that exist in both the backup and the database
-    const targetStores = backupStoreNames.filter((name) => dbStoreNames.includes(name));
+    // Only insert into stores that exist in both the backup and the database,
+    // narrowed to the caller's `storeNames` selection when one was provided.
+    const targetStores = Object.keys(backupData.stores).filter(
+      (name) => dbStoreNames.includes(name) && (selected === null || selected.has(name)),
+    );
 
     if (targetStores.length === 0) {
       return;

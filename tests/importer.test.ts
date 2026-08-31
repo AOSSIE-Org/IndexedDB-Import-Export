@@ -521,4 +521,163 @@ describe('importDB', () => {
     const autoIncRecords = await readAllFromStore(dbName, 'autoInc');
     expect(autoIncRecords).toHaveLength(1);
   });
+
+  // ─── Selective restore via `storeNames` ────────────────────────────
+
+  /**
+   * Backup with one store of durable user data and two derived cache
+   * stores — the shape the `storeNames` option exists to serve.
+   */
+  function buildSelectiveBackup(): ExportFormat {
+    return buildBackup({
+      databaseVersion: 1,
+      schema: {
+        users: { keyPath: 'id', autoIncrement: false, indexes: [] },
+        cache: { keyPath: 'id', autoIncrement: false, indexes: [] },
+        logs: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        users: [
+          { key: 1, value: { id: 1, name: 'Alice' } },
+          { key: 2, value: { id: 2, name: 'Bob' } },
+        ],
+        cache: [{ key: 'c1', value: { id: 'c1', stale: true } }],
+        logs: [{ key: 'l1', value: { id: 'l1', line: 'boot' } }],
+      },
+    });
+  }
+
+  it('"overwrite" with storeNames restores only the listed stores', async () => {
+    const dbName = uniqueDBName('selective-overwrite');
+
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'overwrite',
+      storeNames: ['users'],
+    });
+
+    // Every store in the backup schema still exists — only the data is scoped.
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open(dbName);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    expect(Array.from(db.objectStoreNames).sort()).toEqual(['cache', 'logs', 'users']);
+    db.close();
+
+    expect(await readAllFromStore(dbName, 'users')).toHaveLength(2);
+    expect(await readAllFromStore(dbName, 'cache')).toHaveLength(0);
+    expect(await readAllFromStore(dbName, 'logs')).toHaveLength(0);
+  });
+
+  it('"merge" with storeNames leaves unlisted stores untouched', async () => {
+    const dbName = uniqueDBName('selective-merge');
+
+    const db = await createTestDB(dbName, 1, [
+      { name: 'users', keyPath: 'id', records: [{ value: { id: 1, name: 'Stale' } }] },
+      { name: 'cache', keyPath: 'id', records: [{ value: { id: 'c1', stale: false } }] },
+      { name: 'logs', keyPath: 'id', records: [] },
+    ]);
+    db.close();
+
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'merge',
+      storeNames: ['users'],
+    });
+
+    // `users` is upserted from the backup...
+    const users = await readAllFromStore(dbName, 'users');
+    expect(users).toHaveLength(2);
+    expect(users.map((r) => r.value)).toContainEqual({ id: 1, name: 'Alice' });
+
+    // ...while the unlisted stores keep exactly what they already had.
+    const cache = await readAllFromStore(dbName, 'cache');
+    expect(cache).toHaveLength(1);
+    expect(cache[0]!.value).toEqual({ id: 'c1', stale: false });
+    expect(await readAllFromStore(dbName, 'logs')).toHaveLength(0);
+  });
+
+  it('omitting storeNames restores every store in the backup', async () => {
+    const dbName = uniqueDBName('selective-omitted');
+
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'overwrite',
+    });
+
+    expect(await readAllFromStore(dbName, 'users')).toHaveLength(2);
+    expect(await readAllFromStore(dbName, 'cache')).toHaveLength(1);
+    expect(await readAllFromStore(dbName, 'logs')).toHaveLength(1);
+  });
+
+  it('storeNames as an empty array restores no records but still creates the schema', async () => {
+    const dbName = uniqueDBName('selective-empty');
+
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'overwrite',
+      storeNames: [],
+    });
+
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open(dbName);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    expect(Array.from(db.objectStoreNames).sort()).toEqual(['cache', 'logs', 'users']);
+    db.close();
+
+    expect(await readAllFromStore(dbName, 'users')).toHaveLength(0);
+    expect(await readAllFromStore(dbName, 'cache')).toHaveLength(0);
+    expect(await readAllFromStore(dbName, 'logs')).toHaveLength(0);
+  });
+
+  it('storeNames entries missing from the backup are ignored', async () => {
+    const dbName = uniqueDBName('selective-unknown');
+
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'overwrite',
+      storeNames: ['users', 'not_in_backup'],
+    });
+
+    expect(await readAllFromStore(dbName, 'users')).toHaveLength(2);
+    expect(await readAllFromStore(dbName, 'cache')).toHaveLength(0);
+  });
+
+  it('storeNames listing only unknown stores restores nothing and does not throw', async () => {
+    const dbName = uniqueDBName('selective-all-unknown');
+
+    await expect(
+      importDB({
+        dbName,
+        backupData: buildSelectiveBackup(),
+        strategy: 'overwrite',
+        storeNames: ['not_in_backup'],
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(await readAllFromStore(dbName, 'users')).toHaveLength(0);
+  });
+
+  it('duplicate storeNames entries do not insert records twice', async () => {
+    const dbName = uniqueDBName('selective-duplicates');
+
+    // `overwrite` inserts with `add()`, so a double pass would fail with a
+    // ConstraintError rather than silently duplicating.
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'overwrite',
+      storeNames: ['users', 'users'],
+    });
+
+    expect(await readAllFromStore(dbName, 'users')).toHaveLength(2);
+  });
 });
