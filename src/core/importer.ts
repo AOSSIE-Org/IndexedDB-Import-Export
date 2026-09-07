@@ -13,7 +13,7 @@ import { deserialize } from '../serialization/index.js';
  */
 function buildImportSummary(backupData: ExportFormat): ImportSummary {
   const storeNames = Object.keys(backupData.stores);
-  const recordCounts: Record<string, number> = {};
+  const recordCounts: Record<string, number> = Object.create(null);
 
   for (const storeName of storeNames) {
     recordCounts[storeName] = backupData.stores[storeName]?.length ?? 0;
