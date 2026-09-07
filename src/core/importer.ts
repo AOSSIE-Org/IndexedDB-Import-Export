@@ -1,5 +1,32 @@
-import type { ExportFormat, ImportOptions, StoreSchema } from '../types/index.js';
+import type { ExportFormat, ImportOptions, ImportSummary, StoreSchema } from '../types/index.js';
 import { deserialize } from '../serialization/index.js';
+
+/**
+ * Build a stable {@link ImportSummary} from a backup envelope.
+ *
+ * Derives the store names and per-store record counts from `backupData.stores`,
+ * alongside the envelope's version and metadata, without exposing the raw
+ * {@link ExportFormat} to the caller.
+ *
+ * @param backupData - The parsed backup data.
+ * @returns A summary describing what the backup contains.
+ */
+function buildImportSummary(backupData: ExportFormat): ImportSummary {
+  const storeNames = Object.keys(backupData.stores);
+  const recordCounts: Record<string, number> = {};
+
+  for (const storeName of storeNames) {
+    recordCounts[storeName] = backupData.stores[storeName]?.length ?? 0;
+  }
+
+  return {
+    storeNames,
+    recordCounts,
+    backupVersion: backupData.backupVersion,
+    databaseName: backupData.databaseName,
+    exportedAt: backupData.exportedAt,
+  };
+}
 
 /**
  * Delete an IndexedDB database by name.
@@ -276,7 +303,11 @@ function insertRecords(
  * @param options.dbName - The name of the target IndexedDB database.
  * @param options.backupData - The parsed ExportFormat JSON to import.
  * @param options.strategy - Either `"overwrite"` or `"merge"`.
- * @returns A promise that resolves when the import is complete.
+ * @param options.onBeforeImport - Optional hook called with a summary of the
+ *   backup before anything is written; return `false` to abort the import
+ *   without writing or deleting any data.
+ * @returns A promise that resolves when the import is complete, or resolves
+ *   early without changes if `onBeforeImport` returns `false`.
  *
  * @example
  * ```typescript
@@ -296,7 +327,17 @@ function insertRecords(
  * ```
  */
 export async function importDB(options: ImportOptions): Promise<void> {
-  const { dbName, backupData, strategy } = options;
+  const { dbName, backupData, strategy, onBeforeImport } = options;
+
+  // Give the caller a chance to inspect and reject the backup before any
+  // destructive work. This must run before openDatabaseForImport, which deletes
+  // the database under the "overwrite" strategy.
+  if (onBeforeImport) {
+    const proceed = await onBeforeImport(buildImportSummary(backupData));
+    if (!proceed) {
+      return;
+    }
+  }
 
   const db = await openDatabaseForImport(dbName, backupData, strategy);
 
