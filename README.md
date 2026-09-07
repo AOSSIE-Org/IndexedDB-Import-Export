@@ -231,6 +231,19 @@ await importDB({
   backupData: backup,
   strategy: 'merge',
 });
+
+// Inspect before importing: return false to abort with nothing written
+await importDB({
+  dbName: 'my-app-db',
+  backupData: backup,
+  strategy: 'overwrite',
+  onBeforeImport: (summary) => {
+    return confirm(
+      `Restore ${summary.recordCounts.messages ?? 0} messages from ` +
+        `${summary.databaseName}, exported ${summary.exportedAt}?`
+    );
+  },
+});
 ```
 
 ### Download as JSON File
