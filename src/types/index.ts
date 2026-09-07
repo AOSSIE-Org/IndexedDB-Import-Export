@@ -34,6 +34,11 @@ export const SERIALIZATION_TAGS = {
   UINT8: 'u8',
   BIGINT: 'bigint',
   DATE: 'date',
+  SET: 'set',
+  MAP: 'map',
+  ARRAY_BUFFER: 'buffer',
+  REG_EXP: 'regex',
+  TYPED_ARRAY: 'typed_array',
 } as const;
 
 /**
@@ -46,7 +51,7 @@ export const SERIALIZATION_TAGS = {
  */
 export interface TaggedValue {
   __type: string;
-  value: string;
+  value: unknown;
 }
 
 /**

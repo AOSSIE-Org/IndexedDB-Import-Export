@@ -55,7 +55,7 @@ function isTaggedValue(value: unknown): value is TaggedValue {
   return (
     isPlainObject(value) &&
     typeof value['__type'] === 'string' &&
-    typeof value['value'] === 'string'
+    'value' in value
   );
 }
 
@@ -76,15 +76,56 @@ function isTaggedValue(value: unknown): value is TaggedValue {
 export function serialize(value: unknown): unknown {
   // Uint8Array → tagged base64
   if (value instanceof Uint8Array) {
-    return { __type: SERIALIZATION_TAGS.UINT8, value: uint8ArrayToBase64(value) } satisfies TaggedValue;
+    return {
+      __type: SERIALIZATION_TAGS.UINT8,
+      value: uint8ArrayToBase64(value),
+    } as any;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return {
+      __type: SERIALIZATION_TAGS.TYPED_ARRAY,
+      value: {
+        type: value.constructor.name,
+        data: uint8ArrayToBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
+      },
+    } as any;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return {
+      __type: SERIALIZATION_TAGS.ARRAY_BUFFER,
+      value: uint8ArrayToBase64(new Uint8Array(value)),
+    } as any;
   }
 
   if (typeof value === 'bigint') {
-    return { __type: SERIALIZATION_TAGS.BIGINT, value: value.toString() } satisfies TaggedValue;
+    return { __type: SERIALIZATION_TAGS.BIGINT, value: value.toString() } as any;
   }
 
   if (value instanceof Date) {
-    return { __type: SERIALIZATION_TAGS.DATE, value: value.toISOString() } satisfies TaggedValue;
+    return { __type: SERIALIZATION_TAGS.DATE, value: value.toISOString() } as any;
+  }
+
+  if (value instanceof Set) {
+    return {
+      __type: SERIALIZATION_TAGS.SET,
+      value: serialize([...value]),
+    } as any;
+  }
+
+  if (value instanceof Map) {
+    return {
+      __type: SERIALIZATION_TAGS.MAP,
+      value: serialize([...value.entries()]),
+    } as any;
+  }
+
+  if (value instanceof RegExp) {
+    return {
+      __type: SERIALIZATION_TAGS.REG_EXP,
+      value: { source: value.source, flags: value.flags },
+    } as any;
   }
 
   // Recursively process arrays
@@ -121,17 +162,42 @@ export function deserialize(value: unknown): unknown {
   if (isTaggedValue(value)) {
     switch (value.__type) {
       case SERIALIZATION_TAGS.UINT8:
-        return base64ToUint8Array(value.value);
+        return base64ToUint8Array(value.value as string);
 
       case SERIALIZATION_TAGS.BIGINT:
-        return BigInt(value.value);
+        return BigInt(value.value as string);
 
       case SERIALIZATION_TAGS.DATE: {
-        const date = new Date(value.value);
+        const date = new Date(value.value as string);
         if (Number.isNaN(date.getTime())) {
           throw new RangeError(`Invalid date value in backup: "${value.value}"`);
         }
         return date;
+      }
+
+      case SERIALIZATION_TAGS.ARRAY_BUFFER:
+        return base64ToUint8Array(value.value as string).buffer;
+
+      case SERIALIZATION_TAGS.TYPED_ARRAY: {
+        const payload = value.value as { type: string; data: string };
+        const buffer = base64ToUint8Array(payload.data).buffer;
+        const ctor = (globalThis as any)[payload.type];
+        if (ctor) {
+          return new ctor(buffer);
+        }
+        console.warn(`[idb-backup] Unknown typed array type "${payload.type}". Returning ArrayBuffer.`);
+        return buffer;
+      }
+
+      case SERIALIZATION_TAGS.SET:
+        return new Set(deserialize(value.value) as any[]);
+
+      case SERIALIZATION_TAGS.MAP:
+        return new Map(deserialize(value.value) as any[]);
+
+      case SERIALIZATION_TAGS.REG_EXP: {
+        const payload = value.value as { source: string; flags: string };
+        return new RegExp(payload.source, payload.flags);
       }
 
       default:
