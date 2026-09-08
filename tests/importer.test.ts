@@ -674,8 +674,8 @@ describe('importDB', () => {
     expect(await readAllFromStore(dbName, 'logs')).toHaveLength(1);
   });
 
-  it('storeNames as an empty array restores nothing', async () => {
-    const dbName = uniqueDBName('selective-empty');
+  it('"overwrite" with an empty storeNames array yields an empty database', async () => {
+    const dbName = uniqueDBName('selective-empty-overwrite');
 
     await importDB({
       dbName,
@@ -685,6 +685,36 @@ describe('importDB', () => {
     });
 
     expect(await describeDB(dbName)).toEqual({ version: 1, stores: [] });
+  });
+
+  it('"merge" with an empty storeNames array changes nothing', async () => {
+    const dbName = uniqueDBName('selective-empty-merge');
+
+    const db = await createTestDB(dbName, 1, [
+      { name: 'users', keyPath: 'id', records: [{ value: { id: 1, name: 'Stale' } }] },
+      { name: 'cache', keyPath: 'id', records: [{ value: { id: 'c1', stale: false } }] },
+    ]);
+    db.close();
+
+    await importDB({
+      dbName,
+      backupData: buildSelectiveBackup(),
+      strategy: 'merge',
+      storeNames: [],
+    });
+
+    // Nothing is selected, so no store is created — `logs` stays absent — and the
+    // version is not bumped.
+    expect(await describeDB(dbName)).toEqual({ version: 1, stores: ['cache', 'users'] });
+
+    // Existing records are left exactly as they were.
+    const users = await readAllFromStore(dbName, 'users');
+    expect(users).toHaveLength(1);
+    expect(users[0]!.value).toEqual({ id: 1, name: 'Stale' });
+
+    const cache = await readAllFromStore(dbName, 'cache');
+    expect(cache).toHaveLength(1);
+    expect(cache[0]!.value).toEqual({ id: 'c1', stale: false });
   });
 
   it('storeNames entries missing from the backup are ignored', async () => {

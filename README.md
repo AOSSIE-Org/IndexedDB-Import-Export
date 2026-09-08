@@ -248,7 +248,8 @@ await importDB({
 > left untouched and one that is missing stays missing. Under `overwrite` — which deletes and
 > recreates the database — an excluded store is **absent afterwards even if it existed before**, so
 > prefer `merge` for a partial restore unless the selected stores are meant to be the whole
-> database. Names not present in the backup are ignored.
+> database. Names not present in the backup are ignored, and an empty array selects nothing at all
+> — no records restored and no stores created, so under `overwrite` the result is an empty database.
 
 ### Download as JSON File
 
