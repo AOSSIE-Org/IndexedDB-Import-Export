@@ -232,18 +232,23 @@ await importDB({
   strategy: 'merge',
 });
 
-// Selective restore: only repopulate the listed stores
+// Selective restore: restore only the listed stores, leaving the rest of the
+// database alone. Pairs naturally with 'merge'.
 await importDB({
   dbName: 'my-app-db',
   backupData: backup,
-  strategy: 'overwrite',
+  strategy: 'merge',
   storeNames: ['messages', 'contacts'],
 });
 ```
 
-> **Note:** `storeNames` filters records only. The schema for every store in the backup is still
-> created, so a store left out of the list exists after the import — it is just not populated
-> (empty under `overwrite`, unchanged under `merge`). Names not present in the backup are ignored.
+> **Note:** `storeNames` scopes both schema and records, mirroring `exportDB`. An excluded store is
+> neither populated nor created, so importing with `storeNames` is equivalent to importing a backup
+> that was exported with the same selection. Under `merge`, an excluded store that already exists is
+> left untouched and one that is missing stays missing. Under `overwrite` — which deletes and
+> recreates the database — an excluded store is **absent afterwards even if it existed before**, so
+> prefer `merge` for a partial restore unless the selected stores are meant to be the whole
+> database. Names not present in the backup are ignored.
 
 ### Download as JSON File
 

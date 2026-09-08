@@ -95,15 +95,19 @@ export interface ImportOptions {
    */
   strategy: 'overwrite' | 'merge';
   /**
-   * Optional list of object store names to restore records into.
-   * If omitted, records from every store in the backup are restored.
+   * Optional list of object store names to restore.
+   * If omitted, every store in the backup is restored.
    *
-   * Store names present in `storeNames` but absent from the backup are ignored.
-   * Passing an empty array restores no records at all.
+   * The selection scopes both schema and records, mirroring
+   * {@link ExportOptions.storeNames}: an excluded store is neither populated nor
+   * created. Under `"merge"` an excluded store that already exists is left
+   * untouched, and one that is missing stays missing. Under `"overwrite"` — which
+   * recreates the database from scratch — an excluded store is absent afterwards
+   * even if it existed before, so prefer `"merge"` for a partial restore unless
+   * the selected stores are meant to be the whole database.
    *
-   * This filters records only — the schema for every store in the backup is
-   * still created, so stores left out of `storeNames` exist but stay empty
-   * (under `"overwrite"`) or keep their current contents (under `"merge"`).
+   * Store names absent from the backup are ignored. Passing an empty array
+   * restores nothing.
    */
   storeNames?: string[];
 }
