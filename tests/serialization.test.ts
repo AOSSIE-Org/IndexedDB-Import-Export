@@ -116,3 +116,56 @@ describe('forward compatibility', () => {
     expect(deserialize(taggedLike)).toEqual(taggedLike);
   });
 });
+
+describe('Structured Clone native types serialization', () => {
+  it('round-trips Set', () => {
+    const data = new Set([1, 'two', 3n, new Date('2026-01-01T00:00:00Z')]);
+    const restored = deserialize(serialize(data)) as Set<any>;
+    expect(restored).toBeInstanceOf(Set);
+    expect([...restored]).toEqual([...data]);
+  });
+
+  it('round-trips Map', () => {
+    const data = new Map<string, any>([
+      ['a', 1],
+      ['b', new Set([1, 2, 3])],
+      ['c', 42n]
+    ]);
+    const restored = deserialize(serialize(data)) as Map<string, any>;
+    expect(restored).toBeInstanceOf(Map);
+    expect([...restored.entries()]).toEqual([...data.entries()]);
+  });
+
+  it('round-trips ArrayBuffer', () => {
+    const buffer = new Uint16Array([1, 2, 3]).buffer;
+    const restored = deserialize(serialize(buffer)) as ArrayBuffer;
+    expect(restored).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint16Array(restored)).toEqual(new Uint16Array([1, 2, 3]));
+  });
+
+  it('round-trips TypedArrays', () => {
+    const data = {
+      f32: new Float32Array([1.5, 2.5]),
+      u16: new Uint16Array([1, 2, 3]),
+      i8: new Int8Array([-1, 0, 1])
+    };
+    const restored = deserialize(serialize(data)) as typeof data;
+    expect(restored.f32).toBeInstanceOf(Float32Array);
+    expect(restored.f32).toEqual(new Float32Array([1.5, 2.5]));
+    
+    expect(restored.u16).toBeInstanceOf(Uint16Array);
+    expect(restored.u16).toEqual(new Uint16Array([1, 2, 3]));
+    
+    expect(restored.i8).toBeInstanceOf(Int8Array);
+    expect(restored.i8).toEqual(new Int8Array([-1, 0, 1]));
+  });
+
+  it('round-trips RegExp', () => {
+    const regex = /hello/gi;
+    const restored = deserialize(serialize(regex)) as RegExp;
+    expect(restored).toBeInstanceOf(RegExp);
+    expect(restored.source).toBe(regex.source);
+    expect(restored.flags).toBe(regex.flags);
+  });
+});
+
