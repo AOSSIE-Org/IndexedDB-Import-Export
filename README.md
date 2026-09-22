@@ -240,6 +240,19 @@ await importDB({
   strategy: 'merge',
   storeNames: ['messages', 'contacts'],
 });
+
+// Inspect before importing: return false to abort with nothing written
+await importDB({
+  dbName: 'my-app-db',
+  backupData: backup,
+  strategy: 'overwrite',
+  onBeforeImport: (summary) => {
+    return confirm(
+      `Restore ${summary.recordCounts.messages ?? 0} messages from ` +
+        `${summary.databaseName}, exported ${summary.exportedAt}?`
+    );
+  },
+});
 ```
 
 > **Note:** `storeNames` scopes both schema and records, mirroring `exportDB`. An excluded store is

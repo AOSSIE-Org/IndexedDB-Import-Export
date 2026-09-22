@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { importDB } from '../src/core/importer.js';
-import type { ExportFormat } from '../src/types/index.js';
+import type { ExportFormat, ImportSummary } from '../src/types/index.js';
 import {
   setupFakeIDB,
   uniqueDBName,
@@ -759,5 +759,263 @@ describe('importDB', () => {
     });
 
     expect(await readAllFromStore(dbName, 'users')).toHaveLength(2);
+  });
+});
+
+describe('importDB — onBeforeImport hook', () => {
+  it('imports normally when no hook is provided', async () => {
+    const dbName = uniqueDBName('hook-absent');
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: {
+        users: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        users: [{ key: 1, value: { id: 1, name: 'Alice' } }],
+      },
+    });
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(dbName, 'users');
+    expect(records).toHaveLength(1);
+    expect(records[0]!.value).toEqual({ id: 1, name: 'Alice' });
+  });
+
+  it('proceeds with the import when the hook returns true', async () => {
+    const dbName = uniqueDBName('hook-true');
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: {
+        users: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        users: [{ key: 1, value: { id: 1, name: 'Alice' } }],
+      },
+    });
+
+    const onBeforeImport = vi.fn(() => true);
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport });
+
+    expect(onBeforeImport).toHaveBeenCalledTimes(1);
+    const records = await readAllFromStore(dbName, 'users');
+    expect(records).toHaveLength(1);
+    expect(records[0]!.value).toEqual({ id: 1, name: 'Alice' });
+  });
+
+  it('aborts without writing or deleting when the hook returns false', async () => {
+    const dbName = uniqueDBName('hook-false');
+
+    // Pre-populate the database so we can prove the overwrite delete never ran.
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'items',
+        keyPath: 'id',
+        records: [
+          { value: { id: 1, name: 'Original1' } },
+          { value: { id: 2, name: 'Original2' } },
+        ],
+      },
+    ]);
+    db.close();
+
+    const backup = buildBackup({
+      databaseVersion: 2,
+      schema: {
+        items: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        items: [{ key: 99, value: { id: 99, name: 'ShouldNotAppear' } }],
+      },
+    });
+
+    const onBeforeImport = vi.fn(() => false);
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport });
+
+    expect(onBeforeImport).toHaveBeenCalledTimes(1);
+
+    // The original database and its data must be untouched.
+    const records = await readAllFromStore(dbName, 'items');
+    expect(records).toHaveLength(2);
+    expect(records.map((r) => r.value)).toContainEqual({ id: 1, name: 'Original1' });
+    expect(records.map((r) => r.value)).toContainEqual({ id: 2, name: 'Original2' });
+  });
+
+  it('aborts when the hook returns a promise resolving to false', async () => {
+    const dbName = uniqueDBName('hook-async-false');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'items',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Original' } }],
+      },
+    ]);
+    db.close();
+
+    const backup = buildBackup({
+      databaseVersion: 2,
+      schema: {
+        items: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        items: [{ key: 99, value: { id: 99, name: 'ShouldNotAppear' } }],
+      },
+    });
+
+    const onBeforeImport = vi.fn(() => Promise.resolve(false));
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport });
+
+    expect(onBeforeImport).toHaveBeenCalledTimes(1);
+    const records = await readAllFromStore(dbName, 'items');
+    expect(records).toHaveLength(1);
+    expect(records[0]!.value).toEqual({ id: 1, name: 'Original' });
+  });
+
+  it('receives a summary matching the backup contents', async () => {
+    const dbName = uniqueDBName('hook-summary');
+
+    const exportedAt = '2026-02-01T09:30:00.000Z';
+    const backup = buildBackup({
+      backupVersion: 1,
+      databaseName: 'FatePoolsDB',
+      databaseVersion: 3,
+      exportedAt,
+      schema: {
+        portfolioPositions: { keyPath: 'id', autoIncrement: false, indexes: [] },
+        portfolioTransactions: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        portfolioPositions: [
+          { key: 1, value: { id: 1 } },
+          { key: 2, value: { id: 2 } },
+        ],
+        portfolioTransactions: [{ key: 1, value: { id: 1 } }],
+      },
+    });
+
+    let captured: ImportSummary | undefined;
+    const onBeforeImport = vi.fn((summary: ImportSummary) => {
+      captured = summary;
+      return true;
+    });
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport });
+
+    expect(captured).toBeDefined();
+    expect(captured!.storeNames).toEqual(['portfolioPositions', 'portfolioTransactions']);
+    expect(captured!.recordCounts).toEqual({
+      portfolioPositions: 2,
+      portfolioTransactions: 1,
+    });
+    expect(captured!.backupVersion).toBe(1);
+    expect(captured!.databaseName).toBe('FatePoolsDB');
+    expect(captured!.exportedAt).toBe(exportedAt);
+  });
+
+  it('summary reflects the storeNames selection, not the whole backup', async () => {
+    const dbName = uniqueDBName('hook-summary-selective');
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: {
+        users: { keyPath: 'id', autoIncrement: false, indexes: [] },
+        cache: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        users: [
+          { key: 1, value: { id: 1 } },
+          { key: 2, value: { id: 2 } },
+        ],
+        cache: [{ key: 'c1', value: { id: 'c1' } }],
+      },
+    });
+
+    let captured: ImportSummary | undefined;
+    const onBeforeImport = vi.fn((summary: ImportSummary) => {
+      captured = summary;
+      return true;
+    });
+
+    await importDB({
+      dbName,
+      backupData: backup,
+      strategy: 'overwrite',
+      storeNames: ['users'],
+      onBeforeImport,
+    });
+
+    expect(captured!.storeNames).toEqual(['users']);
+    expect(captured!.recordCounts).toEqual({ users: 2 });
+  });
+
+  it('summary store names follow the schema, the stores importDB will create', async () => {
+    const dbName = uniqueDBName('hook-summary-schema');
+
+    // `cache` is in the schema but has no records (created empty). `orphan` has
+    // records but no schema, so importDB never creates it — it must not appear.
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: {
+        users: { keyPath: 'id', autoIncrement: false, indexes: [] },
+        cache: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        users: [{ key: 1, value: { id: 1 } }],
+        orphan: [{ key: 1, value: { id: 1 } }],
+      },
+    });
+
+    let captured: ImportSummary | undefined;
+    const onBeforeImport = vi.fn((summary: ImportSummary) => {
+      captured = summary;
+      return true;
+    });
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport });
+
+    expect(captured!.storeNames).toEqual(['users', 'cache']);
+    expect(captured!.recordCounts).toEqual({ users: 1, cache: 0 });
+  });
+
+  it('propagates the error and writes nothing when the hook throws', async () => {
+    const dbName = uniqueDBName('hook-throws');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'items',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Original' } }],
+      },
+    ]);
+    db.close();
+
+    const backup = buildBackup({
+      databaseVersion: 2,
+      schema: {
+        items: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        items: [{ key: 99, value: { id: 99, name: 'ShouldNotAppear' } }],
+      },
+    });
+
+    const onBeforeImport = () => {
+      throw new Error('rejected by caller');
+    };
+
+    await expect(
+      importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport })
+    ).rejects.toThrow('rejected by caller');
+
+    // The original database and its data must be untouched.
+    const records = await readAllFromStore(dbName, 'items');
+    expect(records).toHaveLength(1);
+    expect(records[0]!.value).toEqual({ id: 1, name: 'Original' });
   });
 });

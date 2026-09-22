@@ -1,5 +1,42 @@
-import type { ImportOptions, StoreSchema } from '../types/index.js';
+import type { ExportFormat, ImportOptions, ImportSummary, StoreSchema } from '../types/index.js';
 import { deserialize } from '../serialization/index.js';
+
+/**
+ * Build a stable {@link ImportSummary} from a backup envelope and the schema and
+ * store subset that will actually be imported.
+ *
+ * Store names come from `schema` — the stores `importDB` will create — so the
+ * summary lists exactly what will exist after the import, not what merely appears
+ * in the backup records. Per-store counts come from `stores` (0 for a store the
+ * schema creates but the records omit). Both are already narrowed to any
+ * `storeNames` selection. The envelope-level metadata comes from `backupData`,
+ * without exposing the raw {@link ExportFormat} to the caller.
+ *
+ * @param backupData - The parsed backup data, for the envelope-level metadata.
+ * @param schema - The schema subset that will be created, after any selection.
+ * @param stores - The store records that will be imported, after any selection.
+ * @returns A summary describing what will be imported.
+ */
+function buildImportSummary(
+  backupData: ExportFormat,
+  schema: ExportFormat['schema'],
+  stores: ExportFormat['stores'],
+): ImportSummary {
+  const storeNames = Object.keys(schema);
+  const recordCounts: Record<string, number> = Object.create(null);
+
+  for (const storeName of storeNames) {
+    recordCounts[storeName] = stores[storeName]?.length ?? 0;
+  }
+
+  return {
+    storeNames,
+    recordCounts,
+    backupVersion: backupData.backupVersion,
+    databaseName: backupData.databaseName,
+    exportedAt: backupData.exportedAt,
+  };
+}
 
 /**
  * Delete an IndexedDB database by name.
@@ -308,7 +345,11 @@ function insertRecords(
  *   never created: under `"merge"` an excluded store that is missing stays missing (and does not
  *   trigger a version bump), and under `"overwrite"` — which recreates the database from scratch —
  *   an excluded store is absent afterwards even if it existed before.
- * @returns A promise that resolves when the import is complete.
+ * @param options.onBeforeImport - Optional hook called with a summary of the backup (narrowed to
+ *   any `storeNames` selection) before anything is written; return `false` to abort the import
+ *   without writing or deleting any data.
+ * @returns A promise that resolves when the import is complete, or resolves early without changes
+ *   if `onBeforeImport` returns `false`.
  *
  * @example
  * ```typescript
@@ -338,7 +379,7 @@ function insertRecords(
  * ```
  */
 export async function importDB(options: ImportOptions): Promise<void> {
-  const { dbName, backupData, strategy, storeNames } = options;
+  const { dbName, backupData, strategy, storeNames, onBeforeImport } = options;
 
   // A selection scopes the whole import. Narrowing the schema as well as the records
   // is what keeps a partial restore from quietly recreating the stores the caller
@@ -347,6 +388,17 @@ export async function importDB(options: ImportOptions): Promise<void> {
   const selected = storeNames ? new Set(storeNames) : null;
   const schema = selectStores(backupData.schema, selected);
   const stores = selectStores(backupData.stores, selected);
+
+  // Give the caller a chance to inspect and reject the backup before any
+  // destructive work. This runs before openDatabaseForImport, which deletes the
+  // database under the "overwrite" strategy. Selection above is side-effect free,
+  // so the summary reflects the selected stores, i.e. what will actually be written.
+  if (onBeforeImport) {
+    const proceed = await onBeforeImport(buildImportSummary(backupData, schema, stores));
+    if (!proceed) {
+      return;
+    }
+  }
 
   const db = await openDatabaseForImport(dbName, backupData.databaseVersion, schema, strategy);
 
