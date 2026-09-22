@@ -1,4 +1,4 @@
-import type { ExportFormat, ImportOptions, StoreSchema } from '../types/index.js';
+import type { ImportOptions, StoreSchema } from '../types/index.js';
 import { deserialize } from '../serialization/index.js';
 
 /**
@@ -27,6 +27,27 @@ function deleteDatabase(dbName: string): Promise<void> {
       );
     };
   });
+}
+
+/**
+ * Narrow a store-keyed record from the backup to the caller's `storeNames` selection.
+ *
+ * Used for both `schema` and `stores`, so a selection scopes structure and data
+ * identically — the same subset a selective `exportDB()` would have produced.
+ *
+ * @param entries - A store-keyed record from the backup envelope.
+ * @param selected - The selected store names, or `null` when the caller made no selection.
+ * @returns The entries for the selected stores, or `entries` unchanged when there is no selection.
+ */
+function selectStores<T>(
+  entries: Record<string, T>,
+  selected: Set<string> | null,
+): Record<string, T> {
+  if (selected === null) {
+    return entries;
+  }
+
+  return Object.fromEntries(Object.entries(entries).filter(([name]) => selected.has(name)));
 }
 
 /**
@@ -87,15 +108,21 @@ function createStoresFromSchema(
  * (if new stores need to be added), or at the current version if no
  * structural changes are required.
  *
+ * Only the stores in `schema` are created. When the caller narrowed the import
+ * with `storeNames`, the excluded stores are therefore never created here — under
+ * `"merge"` that also means their absence does not trigger a version bump.
+ *
  * @param dbName - The name of the database to open.
- * @param backupData - The parsed backup data.
+ * @param databaseVersion - The database version recorded in the backup.
+ * @param schema - The schema definitions to create, already narrowed to the caller's selection.
  * @param strategy - The import strategy.
  * @returns A promise that resolves to the opened IDBDatabase.
  */
 async function openDatabaseForImport(
   dbName: string,
-  backupData: ExportFormat,
-  strategy: 'overwrite' | 'merge'
+  databaseVersion: number,
+  schema: Record<string, StoreSchema>,
+  strategy: 'overwrite' | 'merge',
 ): Promise<IDBDatabase> {
   if (strategy === 'overwrite') {
     // Delete the existing database entirely
@@ -103,11 +130,11 @@ async function openDatabaseForImport(
 
     // Recreate with the backup's version and schema
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(dbName, backupData.databaseVersion);
+      const request = indexedDB.open(dbName, databaseVersion);
 
       request.onupgradeneeded = () => {
         const db = request.result;
-        createStoresFromSchema(db, backupData.schema, strategy);
+        createStoresFromSchema(db, schema, strategy);
       };
 
       request.onsuccess = () => {
@@ -140,7 +167,7 @@ async function openDatabaseForImport(
       existingDb.close();
 
       // Check if we need to add any new stores
-      const backupStoreNames = Object.keys(backupData.schema);
+      const backupStoreNames = Object.keys(schema);
       const needsNewStores = backupStoreNames.some(
         (name) => !existingStoreNames.includes(name)
       );
@@ -174,7 +201,7 @@ async function openDatabaseForImport(
 
       upgradeRequest.onupgradeneeded = () => {
         const db = upgradeRequest.result;
-        createStoresFromSchema(db, backupData.schema, strategy);
+        createStoresFromSchema(db, schema, strategy);
       };
 
       upgradeRequest.onsuccess = () => {
@@ -276,37 +303,59 @@ function insertRecords(
  * @param options.dbName - The name of the target IndexedDB database.
  * @param options.backupData - The parsed ExportFormat JSON to import.
  * @param options.strategy - Either `"overwrite"` or `"merge"`.
+ * @param options.storeNames - Optional list of store names to restore. If omitted, every store in
+ *   the backup is restored. The selection scopes both schema and records, so an excluded store is
+ *   never created: under `"merge"` an excluded store that is missing stays missing (and does not
+ *   trigger a version bump), and under `"overwrite"` — which recreates the database from scratch —
+ *   an excluded store is absent afterwards even if it existed before.
  * @returns A promise that resolves when the import is complete.
  *
  * @example
  * ```typescript
- * // Overwrite: clean restore
- * await importDB({
- *   dbName: 'my-app-db',
- *   backupData: backup,
- *   strategy: 'overwrite',
- * });
- *
  * // Merge: additive sync
  * await importDB({
  *   dbName: 'my-app-db',
  *   backupData: backup,
  *   strategy: 'merge',
  * });
+ *
+ * // Selective merge: restore user data and leave the derived cache stores alone,
+ * // so the app refetches them rather than reviving a stale copy. The excluded
+ * // stores are neither populated nor created.
+ * await importDB({
+ *   dbName: 'my-app-db',
+ *   backupData: backup,
+ *   strategy: 'merge',
+ *   storeNames: ['portfolioPositions', 'portfolioTransactions'],
+ * });
+ *
+ * // Overwrite: clean restore of the whole backup
+ * await importDB({
+ *   dbName: 'my-app-db',
+ *   backupData: backup,
+ *   strategy: 'overwrite',
+ * });
  * ```
  */
 export async function importDB(options: ImportOptions): Promise<void> {
-  const { dbName, backupData, strategy } = options;
+  const { dbName, backupData, strategy, storeNames } = options;
 
-  const db = await openDatabaseForImport(dbName, backupData, strategy);
+  // A selection scopes the whole import. Narrowing the schema as well as the records
+  // is what keeps a partial restore from quietly recreating the stores the caller
+  // asked to leave out, and makes this equivalent to importing a backup that was
+  // exported with the same `storeNames`.
+  const selected = storeNames ? new Set(storeNames) : null;
+  const schema = selectStores(backupData.schema, selected);
+  const stores = selectStores(backupData.stores, selected);
+
+  const db = await openDatabaseForImport(dbName, backupData.databaseVersion, schema, strategy);
 
   try {
     // Determine which stores to populate from the backup
-    const backupStoreNames = Object.keys(backupData.stores);
     const dbStoreNames = Array.from(db.objectStoreNames);
 
-    // Only insert into stores that exist in both the backup and the database
-    const targetStores = backupStoreNames.filter((name) => dbStoreNames.includes(name));
+    // Only insert into stores that exist in both the (selected) backup and the database
+    const targetStores = Object.keys(stores).filter((name) => dbStoreNames.includes(name));
 
     if (targetStores.length === 0) {
       return;
@@ -317,7 +366,7 @@ export async function importDB(options: ImportOptions): Promise<void> {
 
     const insertPromises = targetStores.map((storeName) => {
       const store = transaction.objectStore(storeName);
-      const records = backupData.stores[storeName] ?? [];
+      const records = stores[storeName] ?? [];
       return insertRecords(store, records, strategy);
     });
 
