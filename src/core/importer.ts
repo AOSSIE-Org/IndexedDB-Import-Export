@@ -2,19 +2,27 @@ import type { ExportFormat, ImportOptions, ImportSummary, StoreSchema } from '..
 import { deserialize } from '../serialization/index.js';
 
 /**
- * Build a stable {@link ImportSummary} from a backup envelope and the store subset
- * that will actually be imported.
+ * Build a stable {@link ImportSummary} from a backup envelope and the schema and
+ * store subset that will actually be imported.
  *
- * Derives the store names and per-store record counts from `stores` (already
- * narrowed to any `storeNames` selection), alongside the envelope's version and
- * metadata, without exposing the raw {@link ExportFormat} to the caller.
+ * Store names come from `schema` — the stores `importDB` will create — so the
+ * summary lists exactly what will exist after the import, not what merely appears
+ * in the backup records. Per-store counts come from `stores` (0 for a store the
+ * schema creates but the records omit). Both are already narrowed to any
+ * `storeNames` selection. The envelope-level metadata comes from `backupData`,
+ * without exposing the raw {@link ExportFormat} to the caller.
  *
  * @param backupData - The parsed backup data, for the envelope-level metadata.
+ * @param schema - The schema subset that will be created, after any selection.
  * @param stores - The store records that will be imported, after any selection.
  * @returns A summary describing what will be imported.
  */
-function buildImportSummary(backupData: ExportFormat, stores: ExportFormat['stores']): ImportSummary {
-  const storeNames = Object.keys(stores);
+function buildImportSummary(
+  backupData: ExportFormat,
+  schema: ExportFormat['schema'],
+  stores: ExportFormat['stores'],
+): ImportSummary {
+  const storeNames = Object.keys(schema);
   const recordCounts: Record<string, number> = Object.create(null);
 
   for (const storeName of storeNames) {
@@ -386,7 +394,7 @@ export async function importDB(options: ImportOptions): Promise<void> {
   // database under the "overwrite" strategy. Selection above is side-effect free,
   // so the summary reflects the selected stores, i.e. what will actually be written.
   if (onBeforeImport) {
-    const proceed = await onBeforeImport(buildImportSummary(backupData, stores));
+    const proceed = await onBeforeImport(buildImportSummary(backupData, schema, stores));
     if (!proceed) {
       return;
     }

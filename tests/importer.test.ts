@@ -954,6 +954,35 @@ describe('importDB — onBeforeImport hook', () => {
     expect(captured!.recordCounts).toEqual({ users: 2 });
   });
 
+  it('summary store names follow the schema, the stores importDB will create', async () => {
+    const dbName = uniqueDBName('hook-summary-schema');
+
+    // `cache` is in the schema but has no records (created empty). `orphan` has
+    // records but no schema, so importDB never creates it — it must not appear.
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: {
+        users: { keyPath: 'id', autoIncrement: false, indexes: [] },
+        cache: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        users: [{ key: 1, value: { id: 1 } }],
+        orphan: [{ key: 1, value: { id: 1 } }],
+      },
+    });
+
+    let captured: ImportSummary | undefined;
+    const onBeforeImport = vi.fn((summary: ImportSummary) => {
+      captured = summary;
+      return true;
+    });
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite', onBeforeImport });
+
+    expect(captured!.storeNames).toEqual(['users', 'cache']);
+    expect(captured!.recordCounts).toEqual({ users: 1, cache: 0 });
+  });
+
   it('propagates the error and writes nothing when the hook throws', async () => {
     const dbName = uniqueDBName('hook-throws');
 
