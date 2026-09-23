@@ -33,3 +33,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Unremediated security review reports — private until findings are closed
+# out by the security-remediation skill, which publishes to security-reviews/
+unremediated-security-reviews/
+
