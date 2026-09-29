@@ -127,6 +127,29 @@ describe('forward compatibility', () => {
   });
 });
 
+describe('user records with a __type key', () => {
+  const roundTrip = (value: unknown) => deserialize(JSON.parse(JSON.stringify(serialize(value))));
+
+  it.each([
+    { __type: 'map', value: [['a', 1]] },
+    { __type: 'set', value: 'not an array' },
+    { __type: 'date', value: '2026-01-01' },
+    { __type: 'object', value: { nested: true } },
+    { __type: 'u8' },
+  ])('round-trips %j unchanged', (record) => {
+    expect(roundTrip(record)).toEqual(record);
+  });
+
+  it('still decodes tagged values nested inside an escaped record', () => {
+    const record = { __type: 'event', value: 5n, at: new Date('2026-01-01T00:00:00Z') };
+    expect(roundTrip(record)).toEqual(record);
+  });
+
+  it('throws on a malformed escape envelope', () => {
+    expect(() => deserialize({ __type: 'object', value: ['x'] })).toThrow(TypeError);
+  });
+});
+
 describe('Set and Map serialization', () => {
   it('round-trips a Set with nested tagged values', () => {
     const data = new Set<unknown>([1, 'two', 3n, new Date('2026-01-01T00:00:00Z')]);

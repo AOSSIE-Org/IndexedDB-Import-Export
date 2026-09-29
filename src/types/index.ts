@@ -39,6 +39,7 @@ export const SERIALIZATION_TAGS = {
   ARRAY_BUFFER: 'buffer',
   REG_EXP: 'regex',
   TYPED_ARRAY: 'typed_array',
+  OBJECT: 'object',
 } as const;
 
 /**
@@ -53,6 +54,7 @@ export const SERIALIZATION_TAGS = {
  * - `"set"` — Set (value is an array of serialized items)
  * - `"map"` — Map (value is an array of serialized `[key, value]` pairs)
  * - `"regex"` — RegExp (value is `{ source, flags }`)
+ * - `"object"` — escaped plain object that has its own `__type` key (value is its serialized fields)
  */
 export interface TaggedValue {
   __type: string;

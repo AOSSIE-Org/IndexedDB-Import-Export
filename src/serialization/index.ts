@@ -63,6 +63,7 @@ const STRUCTURED_TAGS: ReadonlySet<string> = new Set([
   SERIALIZATION_TAGS.MAP,
   SERIALIZATION_TAGS.REG_EXP,
   SERIALIZATION_TAGS.TYPED_ARRAY,
+  SERIALIZATION_TAGS.OBJECT,
 ]);
 
 type ArrayBufferViewConstructor = new (buffer: ArrayBuffer) => ArrayBufferView;
@@ -139,9 +140,13 @@ function expectStringFields<K extends string>(
  * - `Set` → `{ __type: "set", value: [...values] }`
  * - `Map` → `{ __type: "map", value: [[key, value], ...] }`
  * - `RegExp` → `{ __type: "regex", value: { source, flags } }`
+ * - plain object with its own `__type` key → `{ __type: "object", value: { ...fields } }`
  *
  * JSON-safe primitives (string, number, boolean, null) pass through unchanged.
  * Plain objects and arrays are recursively processed.
+ *
+ * Cyclic structures are not supported and overflow the stack; values that
+ * appear more than once are copied, not shared, on restore.
  *
  * @param value - The value to serialize.
  * @returns The serialized value, safe for `JSON.stringify`.
@@ -203,15 +208,32 @@ export function serialize(value: unknown): unknown {
 
   // Recursively process plain objects
   if (isPlainObject(value)) {
-    const result: Record<string, unknown> = Object.create(null);
-    for (const key of Object.keys(value)) {
-      result[key] = serialize(value[key]);
+    const fields = mapFields(value, serialize);
+    // A user record with its own `__type` key could be mistaken for a tag on
+    // import, so wrap it in an escape envelope that is decoded field by field.
+    if (Object.prototype.hasOwnProperty.call(value, '__type')) {
+      return { __type: SERIALIZATION_TAGS.OBJECT, value: fields } satisfies TaggedValue;
     }
-    return result;
+    return fields;
   }
 
   // JSON-safe primitives pass through unchanged
   return value;
+}
+
+/**
+ * Apply `fn` to each own enumerable field, building a null-prototype object
+ * (a prototype-pollution defense for keys like `__proto__`).
+ */
+function mapFields(
+  value: Record<string, unknown>,
+  fn: (field: unknown) => unknown,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = Object.create(null);
+  for (const key of Object.keys(value)) {
+    result[key] = fn(value[key]);
+  }
+  return result;
 }
 
 /**
@@ -286,6 +308,13 @@ export function deserialize(value: unknown): unknown {
         return new RegExp(source, flags);
       }
 
+      case SERIALIZATION_TAGS.OBJECT:
+        // Escaped user record: decode its fields, but never the record itself.
+        if (!isPlainObject(value.value)) {
+          throw invalidPayload(tag, value.value);
+        }
+        return mapFields(value.value, deserialize);
+
       default:
         // Unknown tag — likely written by a newer serializer. Warn so the caller
         // knows the value wasn't decoded, then return as-is (forward compatibility).
@@ -303,11 +332,7 @@ export function deserialize(value: unknown): unknown {
 
   // Recursively process plain objects
   if (isPlainObject(value)) {
-    const result: Record<string, unknown> = Object.create(null);
-    for (const key of Object.keys(value)) {
-      result[key] = deserialize(value[key]);
-    }
-    return result;
+    return mapFields(value, deserialize);
   }
 
   // JSON-safe primitives pass through unchanged
