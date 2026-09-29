@@ -10,6 +10,7 @@ export type {
   ExportFormat,
   ExportOptions,
   ImportOptions,
+  ImportSummary,
   StoreSchema,
   IndexSchema,
   TaggedValue,
