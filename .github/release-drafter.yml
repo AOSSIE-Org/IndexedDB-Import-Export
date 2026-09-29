@@ -51,11 +51,18 @@ categories:
     labels:
       - 'ci-cd'
       - 'github-actions'
-  - title: '👥 Contributors'
+
+version-resolver:
+  major:
     labels:
-      - 'first-time-contributor'
-      - 'repeat-contributor'
-      - 'org-member' 
+      - 'breaking'
+      - 'major'
+  minor:
+    labels:
+      - 'feature'
+      - 'enhancement'
+      - 'feat'
+  default: patch
 
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
 change-title-escapes: '\<*_&'
