@@ -91,6 +91,38 @@ describe('exportDB → importDB round-trip', () => {
     expect(value['payload']).toEqual(originalBytes);
   });
 
+  it('round-trip preserves Set, Map, RegExp, ArrayBuffer, and typed array values', async () => {
+    const sourceDB = uniqueDBName('rt-clone-src');
+    const targetDB = uniqueDBName('rt-clone-tgt');
+
+    const original = {
+      id: 'rec1',
+      tags: new Set(['a', 'b']),
+      scores: new Map<string, bigint>([['alice', 10n]]),
+      pattern: /^id-\d+$/i,
+      raw: new Uint8Array([1, 2, 3]).buffer,
+      samples: new Float32Array([0.5, 1.5]),
+    };
+
+    const db = await createTestDB(sourceDB, 1, [
+      { name: 'clones', keyPath: 'id', records: [{ value: original }] },
+    ]);
+    db.close();
+
+    // Go through JSON text, as a real backup file would.
+    const backup = JSON.parse(JSON.stringify(await exportDB({ dbName: sourceDB })));
+    await importDB({ dbName: targetDB, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(targetDB, 'clones');
+    const value = records[0]!.value as typeof original;
+    expect(value.tags).toEqual(original.tags);
+    expect(value.scores).toEqual(original.scores);
+    expect(value.pattern).toEqual(original.pattern);
+    expect(value.raw).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(value.raw)).toEqual(new Uint8Array([1, 2, 3]));
+    expect(value.samples).toEqual(original.samples);
+  });
+
   it('round-trip preserves multiple stores with indexes', async () => {
     const sourceDB = uniqueDBName('rt-schema-src');
     const targetDB = uniqueDBName('rt-schema-tgt');

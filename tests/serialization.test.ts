@@ -115,57 +115,116 @@ describe('forward compatibility', () => {
     const taggedLike: Record<string, unknown> = { __type: 'bigint' };
     expect(deserialize(taggedLike)).toEqual(taggedLike);
   });
+
+  it('recurses into user objects with an unknown tag and a non-string value', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const record = { __type: 'note', value: { at: new Date('2026-01-01T00:00:00Z') } };
+    const restored = deserialize(serialize(record)) as typeof record;
+    expect(restored.value.at).toBeInstanceOf(Date);
+    expect(restored.value.at).toEqual(record.value.at);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
 
-describe('Structured Clone native types serialization', () => {
-  it('round-trips Set', () => {
-    const data = new Set([1, 'two', 3n, new Date('2026-01-01T00:00:00Z')]);
-    const restored = deserialize(serialize(data)) as Set<any>;
+describe('Set and Map serialization', () => {
+  it('round-trips a Set with nested tagged values', () => {
+    const data = new Set<unknown>([1, 'two', 3n, new Date('2026-01-01T00:00:00Z')]);
+    const restored = deserialize(serialize(data)) as Set<unknown>;
     expect(restored).toBeInstanceOf(Set);
     expect([...restored]).toEqual([...data]);
   });
 
-  it('round-trips Map', () => {
-    const data = new Map<string, any>([
+  it('round-trips a Map with non-string keys and nested Sets', () => {
+    const data = new Map<unknown, unknown>([
       ['a', 1],
-      ['b', new Set([1, 2, 3])],
-      ['c', 42n]
+      [2n, new Set([1, 2, 3])],
+      [new Date('2026-01-01T00:00:00Z'), 'dated'],
     ]);
-    const restored = deserialize(serialize(data)) as Map<string, any>;
+    const restored = deserialize(serialize(data)) as Map<unknown, unknown>;
     expect(restored).toBeInstanceOf(Map);
-    expect([...restored.entries()]).toEqual([...data.entries()]);
+    expect([...restored]).toEqual([...data]);
   });
 
-  it('round-trips ArrayBuffer', () => {
+  it('survives a JSON round-trip inside a record', () => {
+    const record = { tags: new Set(['x', 'y']), index: new Map([['k', 1n]]) };
+    const restored = deserialize(JSON.parse(JSON.stringify(serialize(record)))) as typeof record;
+    expect(restored.tags).toEqual(record.tags);
+    expect(restored.index).toEqual(record.index);
+  });
+
+  it('throws on a malformed Set or Map payload', () => {
+    expect(() => deserialize({ __type: 'set', value: { not: 'an array' } })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'map', value: [['only-key']] })).toThrow(TypeError);
+  });
+});
+
+describe('binary serialization', () => {
+  it('round-trips an ArrayBuffer', () => {
     const buffer = new Uint16Array([1, 2, 3]).buffer;
     const restored = deserialize(serialize(buffer)) as ArrayBuffer;
     expect(restored).toBeInstanceOf(ArrayBuffer);
     expect(new Uint16Array(restored)).toEqual(new Uint16Array([1, 2, 3]));
   });
 
-  it('round-trips TypedArrays', () => {
+  it('round-trips typed arrays and DataView', () => {
     const data = {
       f32: new Float32Array([1.5, 2.5]),
       u16: new Uint16Array([1, 2, 3]),
-      i8: new Int8Array([-1, 0, 1])
+      i8: new Int8Array([-1, 0, 1]),
+      big: new BigInt64Array([-1n, 2n ** 62n]),
+      view: new DataView(new Uint8Array([9, 8, 7]).buffer),
     };
     const restored = deserialize(serialize(data)) as typeof data;
-    expect(restored.f32).toBeInstanceOf(Float32Array);
-    expect(restored.f32).toEqual(new Float32Array([1.5, 2.5]));
-    
-    expect(restored.u16).toBeInstanceOf(Uint16Array);
-    expect(restored.u16).toEqual(new Uint16Array([1, 2, 3]));
-    
-    expect(restored.i8).toBeInstanceOf(Int8Array);
-    expect(restored.i8).toEqual(new Int8Array([-1, 0, 1]));
+    expect(restored.f32).toEqual(data.f32);
+    expect(restored.u16).toEqual(data.u16);
+    expect(restored.i8).toEqual(data.i8);
+    expect(restored.big).toEqual(data.big);
+    expect(restored.view).toBeInstanceOf(DataView);
+    expect(restored.view.getUint8(2)).toBe(7);
   });
 
-  it('round-trips RegExp', () => {
-    const regex = /hello/gi;
-    const restored = deserialize(serialize(regex)) as RegExp;
-    expect(restored).toBeInstanceOf(RegExp);
-    expect(restored.source).toBe(regex.source);
-    expect(restored.flags).toBe(regex.flags);
+  it('keeps only the bytes of a view into a larger buffer', () => {
+    const view = new Uint16Array(new Uint16Array([10, 20, 30, 40]).buffer, 2, 2);
+    const restored = deserialize(serialize(view)) as Uint16Array;
+    expect(restored).toEqual(new Uint16Array([20, 30]));
+    expect(restored.buffer.byteLength).toBe(4);
+  });
+
+  it('records the base type name for typed array subclasses', () => {
+    class Samples extends Float64Array {}
+    const tagged = serialize(new Samples([0.5])) as { value: { type: string } };
+    expect(tagged.value.type).toBe('Float64Array');
+    expect(deserialize(tagged)).toEqual(new Float64Array([0.5]));
+  });
+
+  it('never constructs a non-allowlisted global named in the backup', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const restored = deserialize({
+      __type: 'typed_array',
+      value: { type: 'Function', data: 'AQI=' },
+    });
+    expect(restored).toBeInstanceOf(ArrayBuffer);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('throws on a malformed typed array payload', () => {
+    expect(() => deserialize({ __type: 'typed_array', value: { type: 'Int8Array' } })).toThrow(
+      TypeError,
+    );
   });
 });
 
+describe('RegExp serialization', () => {
+  it('round-trips source and flags', () => {
+    const restored = deserialize(serialize(/hel+o\//gi)) as RegExp;
+    expect(restored).toBeInstanceOf(RegExp);
+    expect(restored.source).toBe('hel+o\\/');
+    expect(restored.flags).toBe('gi');
+  });
+
+  it('throws on a malformed payload', () => {
+    expect(() => deserialize({ __type: 'regex', value: { source: 'a' } })).toThrow(TypeError);
+  });
+});
