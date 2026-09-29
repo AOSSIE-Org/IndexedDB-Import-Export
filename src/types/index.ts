@@ -34,6 +34,12 @@ export const SERIALIZATION_TAGS = {
   UINT8: 'u8',
   BIGINT: 'bigint',
   DATE: 'date',
+  SET: 'set',
+  MAP: 'map',
+  ARRAY_BUFFER: 'buffer',
+  REG_EXP: 'regex',
+  TYPED_ARRAY: 'typed_array',
+  OBJECT: 'object',
 } as const;
 
 /**
@@ -43,10 +49,16 @@ export const SERIALIZATION_TAGS = {
  * - `"u8"` — Uint8Array (value is a base64-encoded string)
  * - `"bigint"` — bigint (value is the string representation)
  * - `"date"` — Date (value is an ISO 8601 string)
+ * - `"buffer"` — ArrayBuffer (value is a base64-encoded string)
+ * - `"typed_array"` — other typed arrays and DataView (value is `{ type, data }`, with `data` base64-encoded)
+ * - `"set"` — Set (value is an array of serialized items)
+ * - `"map"` — Map (value is an array of serialized `[key, value]` pairs)
+ * - `"regex"` — RegExp (value is `{ source, flags }`)
+ * - `"object"` — escaped plain object that has its own `__type` key (value is its serialized fields)
  */
 export interface TaggedValue {
   __type: string;
-  value: string;
+  value: unknown;
 }
 
 /**
