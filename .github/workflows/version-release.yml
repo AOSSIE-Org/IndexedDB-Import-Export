@@ -18,7 +18,7 @@ jobs:
 
     outputs:
       version: ${{ steps.get_version.outputs.version }}
-      released: ${{ steps.publish_release.outputs.released }}
+      released: ${{ steps.publish_release.outputs.released || steps.resume_release.outputs.released }}
 
     steps:
       - name: Checkout code
@@ -61,15 +61,46 @@ jobs:
           echo "✓ Version format is valid: $VERSION"
 
       - name: Check if tag already exists
+        id: tag_check
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
           if git show-ref --tags --verify --quiet "refs/tags/v$VERSION"; then
+            # A manual run may resume a release whose tag and GitHub release
+            # were created but whose npm publish failed.
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "Tag v$VERSION already exists — resuming the build and npm publish"
+              exit 0
+            fi
             echo "Error: Tag v$VERSION already exists"
             exit 1
           fi
+          echo "exists=false" >> "$GITHUB_OUTPUT"
           echo "✓ Tag v$VERSION does not exist yet"
 
+      - name: Resume existing release
+        id: resume_release
+        if: ${{ steps.tag_check.outputs.exists == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = 'v${{ steps.get_version.outputs.version }}';
+            const release = await github.rest.repos
+              .getReleaseByTag({ owner: context.repo.owner, repo: context.repo.repo, tag })
+              .then(({ data }) => data)
+              .catch(() => null);
+
+            if (!release || release.draft) {
+              core.setFailed(`Tag ${tag} exists but has no published GitHub release. Publish it before resuming.`);
+              return;
+            }
+
+            console.log(`✓ Found published release ${release.name}; continuing to npm publish`);
+            core.setOutput('released', 'true');
+
       - name: Create and push tag
+        if: ${{ steps.tag_check.outputs.exists != 'true' }}
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
           git config user.name "github-actions[bot]"
@@ -81,6 +112,7 @@ jobs:
 
       - name: Find and Publish Draft Release
         id: publish_release
+        if: ${{ steps.tag_check.outputs.exists != 'true' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -133,8 +165,12 @@ jobs:
           echo "### Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** v${{ steps.get_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tag Created:** ✓" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.publish_release.outputs.released }}" = "true" ]; then
+          if [ "${{ steps.tag_check.outputs.exists }}" = "true" ]; then
+            echo "- **Tag Created:** already existed (resumed release)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Tag Created:** ✓" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ steps.publish_release.outputs.released || steps.resume_release.outputs.released }}" = "true" ]; then
             echo "- **GitHub Release:** ✓" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **GitHub Release:** ✗ (no draft found)" >> $GITHUB_STEP_SUMMARY
@@ -152,6 +188,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          # Build from the release tag, not the branch head, so a resumed run
+          # never publishes newer commits under this version.
+          ref: v${{ needs.release.outputs.version }}
           persist-credentials: false
 
       - name: Setup Node.js
@@ -176,7 +215,10 @@ jobs:
         run: npm test
 
       - name: Pack package
-        run: npm pack --pack-destination /tmp/pack
+        # npm pack does not create the destination directory.
+        run: |
+          mkdir -p /tmp/pack
+          npm pack --pack-destination /tmp/pack
 
       - name: Upload package tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
