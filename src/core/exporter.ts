@@ -70,14 +70,27 @@ function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; va
  */
 function openDatabase(dbName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    let existed = true;
     const request = indexedDB.open(dbName);
+
+    request.onupgradeneeded = (event) => {
+      if (event.oldVersion === 0) {
+        existed = false;
+        request.transaction?.abort();
+      }
+    };
 
     request.onsuccess = () => {
       resolve(request.result);
     };
 
-    request.onerror = () => {
-      reject(new Error(`Failed to open database "${dbName}": ${String(request.error)}`));
+    request.onerror = (event) => {
+      event.preventDefault();
+      if (!existed) {
+        reject(new Error(`Database "${dbName}" does not exist`));
+      } else {
+        reject(new Error(`Failed to open database "${dbName}": ${String(request.error)}`));
+      }
     };
   });
 }
