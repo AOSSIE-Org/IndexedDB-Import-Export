@@ -225,4 +225,62 @@ describe('exportDB → importDB round-trip', () => {
 
     expect(normalize(mergeRecords)).toEqual(normalize(overwriteRecords));
   });
+
+  it('round-trip preserves cyclic structures and shared object identity through export and import', async () => {
+    const sourceDB = uniqueDBName('rt-cycle-src');
+    const targetDB = uniqueDBName('rt-cycle-tgt');
+
+    interface CyclicRecord {
+      id: string;
+      label: string;
+      self?: CyclicRecord;
+      items: unknown[];
+      map: Map<unknown, unknown>;
+      set: Set<unknown>;
+    }
+
+    const shared = { token: 'auth-xyz', count: 42n };
+    const cyclicObj: CyclicRecord = {
+      id: 'rec-cyclic',
+      label: 'cycle',
+      items: [shared],
+      map: new Map([[shared, shared]]),
+      set: new Set([shared]),
+    };
+    cyclicObj.self = cyclicObj;
+
+    const db = await createTestDB(sourceDB, 1, [
+      {
+        name: 'cyclic_store',
+        keyPath: 'id',
+        records: [{ value: cyclicObj }],
+      },
+    ]);
+    db.close();
+
+    const backup = await exportDB({ dbName: sourceDB });
+    await importDB({
+      dbName: targetDB,
+      backupData: backup,
+      strategy: 'overwrite',
+    });
+
+    const records = await readAllFromStore(targetDB, 'cyclic_store');
+    expect(records).toHaveLength(1);
+
+    const restored = records[0]!.value as CyclicRecord;
+    expect(restored.id).toBe('rec-cyclic');
+    expect(restored.label).toBe('cycle');
+    // Cycle is intact:
+    expect(restored.self).toBe(restored);
+    // Shared references retain identical identity:
+    const restoredShared = restored.items[0] as { token: string; count: bigint };
+    expect(restoredShared.token).toBe('auth-xyz');
+    expect(restoredShared.count).toBe(42n);
+    expect([...restored.set][0]).toBe(restoredShared);
+    const mapKey = [...restored.map.keys()][0];
+    const mapVal = [...restored.map.values()][0];
+    expect(mapKey).toBe(restoredShared);
+    expect(mapVal).toBe(restoredShared);
+  });
 });

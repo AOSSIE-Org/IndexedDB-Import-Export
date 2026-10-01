@@ -57,7 +57,7 @@ The library is designed to be **framework-agnostic**: it works in any browser en
 ## Features
 
 - **Generic JSON export format** : Structured `schema` + `stores` mapping for portable, human-readable backups
-- **Type-tagged serialization** : Lossless round-trip for `Uint8Array`, `bigint`, `Date`, `ArrayBuffer`, typed arrays, `Set`, `Map`, and `RegExp` using a `__type` tag convention
+- **Type-tagged serialization** : Lossless round-trip for `Uint8Array`, `bigint`, `Date`, `ArrayBuffer`, typed arrays, `Set`, `Map`, and `RegExp` using a `__type` tag convention, with full support for cyclic structures and shared object identities
 - **Import strategies** : Choose between `"overwrite"` (fresh restore) or `"merge"` (additive sync with existing data)
 - **SSR-safe** : Graceful no-op guards for server-side rendering environments
 - **Dual output** : Ships both ESM and CJS bundles
@@ -149,6 +149,8 @@ The library produces a self-describing JSON structure:
 | `Map` | `"map"` | Array of serialized `[key, value]` pairs |
 | `RegExp` | `"regex"` | `{ "source": "...", "flags": "..." }` |
 | Plain object with its own `__type` key | `"object"` | The object's serialized fields (escapes records that would look like a tag) |
+| Shared/cyclic object definition | `"def"` | The object's serialized contents, accompanied by `id` |
+| Shared object reference | `"ref"` | Numeric reference ID pointing to an existing `"def"` |
 
 All other JSON-safe values (strings, numbers, booleans, nulls, plain objects, arrays) pass through unchanged.
 
