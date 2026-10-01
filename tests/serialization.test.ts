@@ -251,3 +251,139 @@ describe('RegExp serialization', () => {
     expect(() => deserialize({ __type: 'regex', value: { source: 'a' } })).toThrow(TypeError);
   });
 });
+
+describe('reference-aware serialization and cycle preservation', () => {
+  const roundTrip = <T>(val: T): T => deserialize(JSON.parse(JSON.stringify(serialize(val)))) as T;
+
+  it('round-trips a self-containing array with cycle intact', () => {
+    const arr: unknown[] = [1, 'test'];
+    arr.push(arr);
+    const restored = roundTrip(arr);
+    expect(restored[0]).toBe(1);
+    expect(restored[1]).toBe('test');
+    expect(restored[2]).toBe(restored);
+  });
+
+  it('round-trips a self-containing plain object with cycle intact', () => {
+    interface Node {
+      name: string;
+      self?: Node;
+    }
+    const node: Node = { name: 'cyclic-node' };
+    node.self = node;
+    const restored = roundTrip(node);
+    expect(restored.name).toBe('cyclic-node');
+    expect(restored.self).toBe(restored);
+  });
+
+  it('round-trips a self-containing Set with cycle intact', () => {
+    const s = new Set<unknown>([1, 2]);
+    s.add(s);
+    const restored = roundTrip(s);
+    expect(restored).toBeInstanceOf(Set);
+    expect(restored.size).toBe(3);
+    expect(restored.has(1)).toBe(true);
+    expect(restored.has(2)).toBe(true);
+    expect(restored.has(restored)).toBe(true);
+  });
+
+  it('round-trips a self-containing Map with cycle intact', () => {
+    const m = new Map<unknown, unknown>();
+    m.set('self', m);
+    m.set(m, 'keySelf');
+    const restored = roundTrip(m);
+    expect(restored).toBeInstanceOf(Map);
+    expect(restored.get('self')).toBe(restored);
+    expect(restored.get(restored)).toBe('keySelf');
+  });
+
+  it('preserves shared object identity across multiple container positions', () => {
+    const shared = { id: 'user-1', name: 'Alice' };
+    const data = {
+      primary: shared,
+      secondary: shared,
+      list: [shared],
+      set: new Set([shared]),
+    };
+    const restored = roundTrip(data);
+    expect(restored.primary).toEqual(shared);
+    expect(restored.primary).toBe(restored.secondary);
+    expect(restored.primary).toBe(restored.list[0]);
+    expect([...restored.set][0]).toBe(restored.primary);
+  });
+
+  it('preserves shared object identity when used as both key and value in a Map', () => {
+    const shared = { key: 'unique' };
+    const m = new Map<unknown, unknown>([[shared, shared]]);
+    const restored = roundTrip(m);
+    expect(restored).toBeInstanceOf(Map);
+    const keys = [...restored.keys()];
+    const values = [...restored.values()];
+    expect(keys[0]).toEqual(shared);
+    expect(keys[0]).toBe(values[0]);
+    expect(restored.get(keys[0])).toBe(keys[0]);
+  });
+
+  it('round-trips mutually recursive structures', () => {
+    interface Parent {
+      name: string;
+      child?: Child;
+    }
+    interface Child {
+      name: string;
+      parent: Parent;
+    }
+    const parent: Parent = { name: 'parent' };
+    const child: Child = { name: 'child', parent };
+    parent.child = child;
+
+    const restored = roundTrip(parent);
+    expect(restored.name).toBe('parent');
+    expect(restored.child?.name).toBe('child');
+    expect(restored.child?.parent).toBe(restored);
+    expect(restored.child?.parent.child).toBe(restored.child);
+  });
+
+  it('round-trips escaped user objects with __type in cycles', () => {
+    interface EscapedNode {
+      __type: string;
+      label: string;
+      loop?: EscapedNode;
+    }
+    const item: EscapedNode = { __type: 'custom', label: 'test' };
+    item.loop = item;
+    const restored = roundTrip(item);
+    expect(restored.__type).toBe('custom');
+    expect(restored.label).toBe('test');
+    expect(restored.loop).toBe(restored);
+  });
+});
+
+describe('reference validation and error handling', () => {
+  it('throws on unknown reference id', () => {
+    expect(() => deserialize({ __type: 'ref', id: 999, value: 999 })).toThrow(ReferenceError);
+  });
+
+  it('throws on missing or non-integer ref id', () => {
+    expect(() => deserialize({ __type: 'ref', value: null })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'ref', id: 'not-a-number', value: null })).toThrow(
+      TypeError,
+    );
+    expect(() => deserialize({ __type: 'ref', id: 1.5, value: 1.5 })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'ref', id: -1, value: -1 })).toThrow(TypeError);
+  });
+
+  it('throws on missing or invalid def id', () => {
+    expect(() => deserialize({ __type: 'def', value: [] })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'def', id: 0, value: [] })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'def', id: 'abc', value: [] })).toThrow(TypeError);
+  });
+
+  it('throws on duplicate def id', () => {
+    const payload = [
+      { __type: 'def', id: 1, value: [1] },
+      { __type: 'def', id: 1, value: [2] },
+    ];
+    expect(() => deserialize(payload)).toThrow(TypeError);
+  });
+});
