@@ -195,7 +195,15 @@ async function openDatabaseForImport(
   // Merge strategy: open at a higher version if new stores are needed
   return new Promise((resolve, reject) => {
     // First, probe the current version
+    let existed = true;
     const probeRequest = indexedDB.open(dbName);
+
+    probeRequest.onupgradeneeded = (event) => {
+      if (event.oldVersion === 0) {
+        existed = false;
+        probeRequest.transaction?.abort();
+      }
+    };
 
     probeRequest.onsuccess = () => {
       const existingDb = probeRequest.result;
@@ -213,23 +221,9 @@ async function openDatabaseForImport(
         // No structural changes needed — just open at the current version
         const openRequest = indexedDB.open(dbName, currentVersion);
 
-        openRequest.onsuccess = () => {
-          resolve(openRequest.result);
-        };
-
-        openRequest.onerror = () => {
-          reject(
-            new Error(`Failed to open database "${dbName}": ${String(openRequest.error)}`)
-          );
-        };
-
-        openRequest.onblocked = () => {
-          reject(
-            new Error(
-              `Database "${dbName}" open blocked. Close all other connections and try again.`
-            )
-          );
-        };
+        openRequest.onsuccess = () => resolve(openRequest.result);
+        openRequest.onerror = () => reject(new Error(`Failed to open database "${dbName}": ${String(openRequest.error)}`));
+        openRequest.onblocked = () => reject(new Error(`Database "${dbName}" open blocked. Close all other connections and try again.`));
         return;
       }
 
@@ -241,27 +235,28 @@ async function openDatabaseForImport(
         createStoresFromSchema(db, schema, strategy);
       };
 
-      upgradeRequest.onsuccess = () => {
-        resolve(upgradeRequest.result);
-      };
-
-      upgradeRequest.onerror = () => {
-        reject(
-          new Error(`Failed to upgrade database "${dbName}": ${String(upgradeRequest.error)}`)
-        );
-      };
-
-      upgradeRequest.onblocked = () => {
-        reject(
-          new Error(
-            `Database "${dbName}" upgrade blocked. Close all other connections and try again.`
-          )
-        );
-      };
+      upgradeRequest.onsuccess = () => resolve(upgradeRequest.result);
+      upgradeRequest.onerror = () => reject(new Error(`Failed to upgrade database "${dbName}": ${String(upgradeRequest.error)}`));
+      upgradeRequest.onblocked = () => reject(new Error(`Database "${dbName}" upgrade blocked. Close all other connections and try again.`));
     };
 
-    probeRequest.onerror = () => {
-      reject(new Error(`Failed to probe database "${dbName}": ${String(probeRequest.error)}`));
+    probeRequest.onerror = (event) => {
+      event.preventDefault();
+      if (!existed) {
+        // If the database doesn't exist, create it with the backup's version and schema
+        const createRequest = indexedDB.open(dbName, backupData.databaseVersion);
+        
+        createRequest.onupgradeneeded = () => {
+          const db = createRequest.result;
+          createStoresFromSchema(db, backupData.schema, strategy);
+        };
+        
+        createRequest.onsuccess = () => resolve(createRequest.result);
+        createRequest.onerror = () => reject(new Error(`Failed to create database "${dbName}": ${String(createRequest.error)}`));
+        createRequest.onblocked = () => reject(new Error(`Database "${dbName}" create blocked.`));
+      } else {
+        reject(new Error(`Failed to probe database "${dbName}": ${String(probeRequest.error)}`));
+      }
     };
   });
 }
