@@ -64,6 +64,8 @@ const STRUCTURED_TAGS: ReadonlySet<string> = new Set([
   SERIALIZATION_TAGS.REG_EXP,
   SERIALIZATION_TAGS.TYPED_ARRAY,
   SERIALIZATION_TAGS.OBJECT,
+  SERIALIZATION_TAGS.DEF,
+  SERIALIZATION_TAGS.REF,
 ]);
 
 type ArrayBufferViewConstructor = new (buffer: ArrayBuffer) => ArrayBufferView;
@@ -129,7 +131,70 @@ function expectStringFields<K extends string>(
 }
 
 /**
- * Recursively serialize a value, converting non-JSON-safe types to tagged representations.
+ * Check whether a value is a container that can hold references and form cycles
+ * (arrays, plain objects, Set, and Map).
+ */
+function isReferenceableContainer(value: unknown): value is object {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  return (
+    Array.isArray(value) || isPlainObject(value) || value instanceof Set || value instanceof Map
+  );
+}
+
+/**
+ * Pre-scan an object graph to discover which containers appear more than once
+ * or participate in a cyclic reference. Returns a set of those shared objects.
+ * Cycles are detected safely without stack overflow.
+ */
+function findSharedObjects(root: unknown): Set<object> {
+  const seen = new Set<object>();
+  const shared = new Set<object>();
+
+  function scan(val: unknown) {
+    if (!isReferenceableContainer(val)) {
+      return;
+    }
+    if (seen.has(val)) {
+      shared.add(val);
+      return;
+    }
+    seen.add(val);
+
+    if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        scan(val[i]);
+      }
+    } else if (val instanceof Set) {
+      for (const item of val) {
+        scan(item);
+      }
+    } else if (val instanceof Map) {
+      for (const [k, v] of val) {
+        scan(k);
+        scan(v);
+      }
+    } else if (isPlainObject(val)) {
+      for (const key of Object.keys(val)) {
+        scan(val[key]);
+      }
+    }
+  }
+
+  scan(root);
+  return shared;
+}
+
+interface SerializationContext {
+  shared: Set<object>;
+  idMap: Map<object, number>;
+  nextId: number;
+}
+
+/**
+ * Recursively serialize a value, converting non-JSON-safe types to tagged representations
+ * and preserving shared/cyclic references across containers (arrays, plain objects, Set, Map).
  *
  * Currently handles:
  * - `Uint8Array` → `{ __type: "u8", value: "<base64>" }`
@@ -141,18 +206,80 @@ function expectStringFields<K extends string>(
  * - `Map` → `{ __type: "map", value: [[key, value], ...] }`
  * - `RegExp` → `{ __type: "regex", value: { source, flags } }`
  * - plain object with its own `__type` key → `{ __type: "object", value: { ...fields } }`
+ * - shared/cyclic object definition → `{ __type: "def", id: <id>, value: <contents> }`
+ * - reference to an already defined shared object → `{ __type: "ref", id: <id>, value: <id> }`
  *
  * JSON-safe primitives (string, number, boolean, null) pass through unchanged.
  * Plain objects and arrays are recursively processed.
- *
- * Cyclic structures are not supported and overflow the stack; values that
- * appear more than once are copied, not shared, on restore.
  *
  * @param value - The value to serialize.
  * @returns The serialized value, safe for `JSON.stringify`.
  */
 export function serialize(value: unknown): unknown {
-  // Uint8Array → tagged base64
+  const shared = findSharedObjects(value);
+  const context: SerializationContext = {
+    shared,
+    idMap: new Map<object, number>(),
+    nextId: 1,
+  };
+  return serializeInternal(value, context);
+}
+
+function serializeContainerBody(value: object, context: SerializationContext): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeInternal(item, context));
+  }
+
+  if (value instanceof Set) {
+    return {
+      __type: SERIALIZATION_TAGS.SET,
+      value: [...value].map((item) => serializeInternal(item, context)),
+    } satisfies TaggedValue;
+  }
+
+  if (value instanceof Map) {
+    return {
+      __type: SERIALIZATION_TAGS.MAP,
+      value: [...value].map(([k, v]) => [
+        serializeInternal(k, context),
+        serializeInternal(v, context),
+      ]),
+    } satisfies TaggedValue;
+  }
+
+  if (isPlainObject(value)) {
+    const fields = mapFields(value, (item) => serializeInternal(item, context));
+    if (Object.prototype.hasOwnProperty.call(value, '__type')) {
+      return { __type: SERIALIZATION_TAGS.OBJECT, value: fields } satisfies TaggedValue;
+    }
+    return fields;
+  }
+
+  return value;
+}
+
+function serializeInternal(value: unknown, context: SerializationContext): unknown {
+  if (typeof value === 'object' && value !== null && context.shared.has(value)) {
+    if (context.idMap.has(value)) {
+      const refId = context.idMap.get(value)!;
+      return {
+        __type: SERIALIZATION_TAGS.REF,
+        id: refId,
+        value: refId,
+      } satisfies TaggedValue;
+    }
+
+    const defId = context.nextId++;
+    context.idMap.set(value, defId);
+    const body = serializeContainerBody(value, context);
+    return {
+      __type: SERIALIZATION_TAGS.DEF,
+      id: defId,
+      value: body,
+    } satisfies TaggedValue;
+  }
+
+  // Non-shared or non-container values:
   if (value instanceof Uint8Array) {
     return {
       __type: SERIALIZATION_TAGS.UINT8,
@@ -161,8 +288,6 @@ export function serialize(value: unknown): unknown {
   }
 
   if (ArrayBuffer.isView(value)) {
-    // The built-in toStringTag gives the base type name even for subclasses
-    // and minified code, unlike `constructor.name`.
     const type = Object.prototype.toString.call(value).slice(8, -1);
     const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     return {
@@ -187,11 +312,20 @@ export function serialize(value: unknown): unknown {
   }
 
   if (value instanceof Set) {
-    return { __type: SERIALIZATION_TAGS.SET, value: serialize([...value]) } satisfies TaggedValue;
+    return {
+      __type: SERIALIZATION_TAGS.SET,
+      value: [...value].map((item) => serializeInternal(item, context)),
+    } satisfies TaggedValue;
   }
 
   if (value instanceof Map) {
-    return { __type: SERIALIZATION_TAGS.MAP, value: serialize([...value]) } satisfies TaggedValue;
+    return {
+      __type: SERIALIZATION_TAGS.MAP,
+      value: [...value].map(([k, v]) => [
+        serializeInternal(k, context),
+        serializeInternal(v, context),
+      ]),
+    } satisfies TaggedValue;
   }
 
   if (value instanceof RegExp) {
@@ -203,14 +337,12 @@ export function serialize(value: unknown): unknown {
 
   // Recursively process arrays
   if (Array.isArray(value)) {
-    return value.map((item) => serialize(item));
+    return value.map((item) => serializeInternal(item, context));
   }
 
   // Recursively process plain objects
   if (isPlainObject(value)) {
-    const fields = mapFields(value, serialize);
-    // A user record with its own `__type` key could be mistaken for a tag on
-    // import, so wrap it in an escape envelope that is decoded field by field.
+    const fields = mapFields(value, (item) => serializeInternal(item, context));
     if (Object.prototype.hasOwnProperty.call(value, '__type')) {
       return { __type: SERIALIZATION_TAGS.OBJECT, value: fields } satisfies TaggedValue;
     }
@@ -237,7 +369,8 @@ function mapFields(
 }
 
 /**
- * Recursively deserialize a value, converting tagged representations back to native types.
+ * Recursively deserialize a value, converting tagged representations back to native types
+ * and resolving shared and cyclic references.
  *
  * Reverses every tag produced by {@link serialize}. A malformed payload for a
  * known tag throws a `TypeError` (or a `RangeError` for an invalid date);
@@ -247,94 +380,197 @@ function mapFields(
  * @returns The deserialized value with native types restored.
  */
 export function deserialize(value: unknown): unknown {
+  const context = new Map<number, unknown>();
+  return deserializeInternal(value, context);
+}
+
+function deserializeInternal(value: unknown, context: Map<number, unknown>): unknown {
   // Check for tagged values first
   if (isTaggedValue(value)) {
     const tag = value.__type;
-    switch (tag) {
-      case SERIALIZATION_TAGS.UINT8:
-        return base64ToUint8Array(expectString(tag, value.value));
 
-      case SERIALIZATION_TAGS.BIGINT:
-        return BigInt(expectString(tag, value.value));
-
-      case SERIALIZATION_TAGS.DATE: {
-        const date = new Date(expectString(tag, value.value));
-        if (Number.isNaN(date.getTime())) {
-          throw new RangeError(`Invalid date value in backup: "${value.value}"`);
-        }
-        return date;
+    if (tag === SERIALIZATION_TAGS.REF) {
+      const id =
+        typeof value.id === 'number'
+          ? value.id
+          : typeof value.value === 'number'
+            ? value.value
+            : null;
+      if (id === null || !Number.isInteger(id) || id <= 0) {
+        throw new TypeError(`Invalid "${tag}" value in backup: missing or invalid id`);
       }
-
-      case SERIALIZATION_TAGS.ARRAY_BUFFER:
-        return toArrayBuffer(base64ToUint8Array(expectString(tag, value.value)));
-
-      case SERIALIZATION_TAGS.TYPED_ARRAY: {
-        const { type, data } = expectStringFields(tag, value.value, ['type', 'data'] as const);
-        const buffer = toArrayBuffer(base64ToUint8Array(data));
-        const Ctor = TYPED_ARRAY_CONSTRUCTORS[type];
-        if (!Ctor) {
-          console.warn(
-            `[idb-backup] Unknown typed array type "${type}" — returning an ArrayBuffer.`,
-          );
-          return buffer;
-        }
-        return new Ctor(buffer);
+      if (!context.has(id)) {
+        throw new ReferenceError(`Unknown reference id: ${id}`);
       }
-
-      case SERIALIZATION_TAGS.SET: {
-        const items = deserialize(value.value);
-        if (!Array.isArray(items)) {
-          throw invalidPayload(tag, value.value);
-        }
-        return new Set(items);
-      }
-
-      case SERIALIZATION_TAGS.MAP: {
-        const entries = deserialize(value.value);
-        if (
-          !Array.isArray(entries) ||
-          !entries.every((entry) => Array.isArray(entry) && entry.length === 2)
-        ) {
-          throw invalidPayload(tag, value.value);
-        }
-        return new Map(entries as [unknown, unknown][]);
-      }
-
-      case SERIALIZATION_TAGS.REG_EXP: {
-        const { source, flags } = expectStringFields(tag, value.value, [
-          'source',
-          'flags',
-        ] as const);
-        return new RegExp(source, flags);
-      }
-
-      case SERIALIZATION_TAGS.OBJECT:
-        // Escaped user record: decode its fields, but never the record itself.
-        if (!isPlainObject(value.value)) {
-          throw invalidPayload(tag, value.value);
-        }
-        return mapFields(value.value, deserialize);
-
-      default:
-        // Unknown tag — likely written by a newer serializer. Warn so the caller
-        // knows the value wasn't decoded, then return as-is (forward compatibility).
-        console.warn(
-          `[idb-backup] Unknown __type tag "${value.__type}" — returning the tagged value unchanged.`,
-        );
-        return value;
+      return context.get(id);
     }
+
+    if (tag === SERIALIZATION_TAGS.DEF) {
+      const id = typeof value.id === 'number' ? value.id : null;
+      if (id === null || !Number.isInteger(id) || id <= 0) {
+        throw new TypeError(`Invalid "${tag}" value in backup: missing or invalid id`);
+      }
+      if (context.has(id)) {
+        throw new TypeError(`Duplicate definition for reference id: ${id}`);
+      }
+      if (!('value' in value)) {
+        throw new TypeError(`Invalid "${tag}" value in backup: missing value`);
+      }
+
+      const inner = value.value;
+
+      if (Array.isArray(inner)) {
+        const container: unknown[] = [];
+        context.set(id, container);
+        for (let i = 0; i < inner.length; i++) {
+          container.push(deserializeInternal(inner[i], context));
+        }
+        return container;
+      }
+
+      if (isTaggedValue(inner)) {
+        if (inner.__type === SERIALIZATION_TAGS.SET) {
+          const container = new Set<unknown>();
+          context.set(id, container);
+          const items = deserializeInternal(inner.value, context);
+          if (!Array.isArray(items)) {
+            throw invalidPayload(SERIALIZATION_TAGS.SET, inner.value);
+          }
+          for (const item of items) {
+            container.add(item);
+          }
+          return container;
+        }
+
+        if (inner.__type === SERIALIZATION_TAGS.MAP) {
+          const container = new Map<unknown, unknown>();
+          context.set(id, container);
+          const entries = deserializeInternal(inner.value, context);
+          if (
+            !Array.isArray(entries) ||
+            !entries.every((entry) => Array.isArray(entry) && entry.length === 2)
+          ) {
+            throw invalidPayload(SERIALIZATION_TAGS.MAP, inner.value);
+          }
+          for (const [k, v] of entries) {
+            container.set(k, v);
+          }
+          return container;
+        }
+
+        if (inner.__type === SERIALIZATION_TAGS.OBJECT) {
+          if (!isPlainObject(inner.value)) {
+            throw invalidPayload(SERIALIZATION_TAGS.OBJECT, inner.value);
+          }
+          const container: Record<string, unknown> = Object.create(null);
+          context.set(id, container);
+          for (const key of Object.keys(inner.value)) {
+            container[key] = deserializeInternal(inner.value[key], context);
+          }
+          return container;
+        }
+
+        const result = deserializeTagged(inner, context);
+        context.set(id, result);
+        return result;
+      }
+
+      if (isPlainObject(inner)) {
+        const container: Record<string, unknown> = Object.create(null);
+        context.set(id, container);
+        for (const key of Object.keys(inner)) {
+          container[key] = deserializeInternal(inner[key], context);
+        }
+        return container;
+      }
+
+      const result = deserializeInternal(inner, context);
+      context.set(id, result);
+      return result;
+    }
+
+    return deserializeTagged(value, context);
   }
 
   // Recursively process arrays
   if (Array.isArray(value)) {
-    return value.map((item) => deserialize(item));
+    return value.map((item) => deserializeInternal(item, context));
   }
 
   // Recursively process plain objects
   if (isPlainObject(value)) {
-    return mapFields(value, deserialize);
+    return mapFields(value, (item) => deserializeInternal(item, context));
   }
 
   // JSON-safe primitives pass through unchanged
   return value;
+}
+
+function deserializeTagged(value: TaggedValue, context: Map<number, unknown>): unknown {
+  const tag = value.__type;
+  switch (tag) {
+    case SERIALIZATION_TAGS.UINT8:
+      return base64ToUint8Array(expectString(tag, value.value));
+
+    case SERIALIZATION_TAGS.BIGINT:
+      return BigInt(expectString(tag, value.value));
+
+    case SERIALIZATION_TAGS.DATE: {
+      const date = new Date(expectString(tag, value.value));
+      if (Number.isNaN(date.getTime())) {
+        throw new RangeError(`Invalid date value in backup: "${value.value}"`);
+      }
+      return date;
+    }
+
+    case SERIALIZATION_TAGS.ARRAY_BUFFER:
+      return toArrayBuffer(base64ToUint8Array(expectString(tag, value.value)));
+
+    case SERIALIZATION_TAGS.TYPED_ARRAY: {
+      const { type, data } = expectStringFields(tag, value.value, ['type', 'data'] as const);
+      const buffer = toArrayBuffer(base64ToUint8Array(data));
+      const Ctor = TYPED_ARRAY_CONSTRUCTORS[type];
+      if (!Ctor) {
+        console.warn(`[idb-backup] Unknown typed array type "${type}" — returning an ArrayBuffer.`);
+        return buffer;
+      }
+      return new Ctor(buffer);
+    }
+
+    case SERIALIZATION_TAGS.SET: {
+      const items = deserializeInternal(value.value, context);
+      if (!Array.isArray(items)) {
+        throw invalidPayload(tag, value.value);
+      }
+      return new Set(items);
+    }
+
+    case SERIALIZATION_TAGS.MAP: {
+      const entries = deserializeInternal(value.value, context);
+      if (
+        !Array.isArray(entries) ||
+        !entries.every((entry) => Array.isArray(entry) && entry.length === 2)
+      ) {
+        throw invalidPayload(tag, value.value);
+      }
+      return new Map(entries as [unknown, unknown][]);
+    }
+
+    case SERIALIZATION_TAGS.REG_EXP: {
+      const { source, flags } = expectStringFields(tag, value.value, ['source', 'flags'] as const);
+      return new RegExp(source, flags);
+    }
+
+    case SERIALIZATION_TAGS.OBJECT:
+      if (!isPlainObject(value.value)) {
+        throw invalidPayload(tag, value.value);
+      }
+      return mapFields(value.value, (item) => deserializeInternal(item, context));
+
+    default:
+      console.warn(
+        `[idb-backup] Unknown __type tag "${value.__type}" — returning the tagged value unchanged.`,
+      );
+      return value;
+  }
 }

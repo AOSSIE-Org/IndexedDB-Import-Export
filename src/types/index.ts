@@ -40,6 +40,8 @@ export const SERIALIZATION_TAGS = {
   REG_EXP: 'regex',
   TYPED_ARRAY: 'typed_array',
   OBJECT: 'object',
+  DEF: 'def',
+  REF: 'ref',
 } as const;
 
 /**
@@ -55,10 +57,13 @@ export const SERIALIZATION_TAGS = {
  * - `"map"` — Map (value is an array of serialized `[key, value]` pairs)
  * - `"regex"` — RegExp (value is `{ source, flags }`)
  * - `"object"` — escaped plain object that has its own `__type` key (value is its serialized fields)
+ * - `"def"` — definition wrapper for shared or cyclic objects (contains `id` and `value`)
+ * - `"ref"` — reference to a previously defined object by `id`
  */
 export interface TaggedValue {
   __type: string;
   value: unknown;
+  id?: number;
 }
 
 /**
