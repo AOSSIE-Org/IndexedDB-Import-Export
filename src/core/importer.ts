@@ -269,14 +269,14 @@ async function openDatabaseForImport(
 /**
  * Insert records into a single object store.
  *
- * Each record is deserialized from its tagged representation back to
- * native JavaScript types before insertion.
+ * Records must already be deserialized from their tagged representation back to
+ * native JavaScript types (done up front in `importDB`, before anything is deleted).
  *
  * In merge mode, `put()` is used to upsert records (add or update by key).
  * In overwrite mode, `add()` is used since the store is guaranteed to be empty.
  *
  * @param store - The IDBObjectStore to insert records into.
- * @param records - The serialized records from the backup.
+ * @param records - The deserialized records from the backup.
  * @param strategy - The import strategy.
  * @returns A promise that resolves when all records are inserted.
  */
@@ -294,10 +294,7 @@ function insertRecords(
       return;
     }
 
-    for (const serializedRecord of records) {
-      const value = deserialize(serializedRecord.value);
-      const key = deserialize(serializedRecord.key);
-
+    for (const { key, value } of records) {
       // For stores with out-of-line keys (keyPath is null), pass the key explicitly.
       // For inline-key stores, IDB extracts the key from the value automatically.
       const hasInlineKey = store.keyPath !== null;
@@ -400,6 +397,19 @@ export async function importDB(options: ImportOptions): Promise<void> {
     }
   }
 
+  // Deserialize every record before touching the database. A bad record (for example
+  // an invalid date) then rejects here, while the existing data is still intact:
+  // "overwrite" has not deleted it and "merge" has not written anything yet.
+  const deserialized = Object.fromEntries(
+    Object.entries(stores).map(([name, records]) => [
+      name,
+      records.map((record) => ({
+        key: deserialize(record.key),
+        value: deserialize(record.value),
+      })),
+    ]),
+  );
+
   const db = await openDatabaseForImport(dbName, backupData.databaseVersion, schema, strategy);
 
   try {
@@ -407,7 +417,7 @@ export async function importDB(options: ImportOptions): Promise<void> {
     const dbStoreNames = Array.from(db.objectStoreNames);
 
     // Only insert into stores that exist in both the (selected) backup and the database
-    const targetStores = Object.keys(stores).filter((name) => dbStoreNames.includes(name));
+    const targetStores = Object.keys(deserialized).filter((name) => dbStoreNames.includes(name));
 
     if (targetStores.length === 0) {
       return;
@@ -418,7 +428,7 @@ export async function importDB(options: ImportOptions): Promise<void> {
 
     const insertPromises = targetStores.map((storeName) => {
       const store = transaction.objectStore(storeName);
-      const records = stores[storeName] ?? [];
+      const records = deserialized[storeName] ?? [];
       return insertRecords(store, records, strategy);
     });
 

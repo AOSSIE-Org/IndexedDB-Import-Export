@@ -760,6 +760,73 @@ describe('importDB', () => {
 
     expect(await readAllFromStore(dbName, 'users')).toHaveLength(2);
   });
+
+  // ─── Invalid backup records ────────────────────────────────────────
+
+  it('"overwrite" with an invalid record rejects and keeps the existing data', async () => {
+    const dbName = uniqueDBName('invalid-overwrite');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'items',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Old1' } }, { value: { id: 2, name: 'Old2' } }],
+      },
+    ]);
+    db.close();
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: { items: { keyPath: 'id', autoIncrement: false, indexes: [] } },
+      stores: {
+        items: [
+          { key: 3, value: { id: 3, name: 'New' } },
+          { key: 4, value: { id: 4, at: { __type: 'date', value: 'not-a-date' } } },
+        ],
+      },
+    });
+
+    await expect(importDB({ dbName, backupData: backup, strategy: 'overwrite' })).rejects.toThrow(
+      /Invalid date/,
+    );
+
+    const records = await readAllFromStore(dbName, 'items');
+    expect(records.map((r) => r.value)).toEqual([
+      { id: 1, name: 'Old1' },
+      { id: 2, name: 'Old2' },
+    ]);
+  });
+
+  it('"merge" with an invalid record rejects and writes nothing', async () => {
+    const dbName = uniqueDBName('invalid-merge');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'items',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Old1' } }],
+      },
+    ]);
+    db.close();
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: { items: { keyPath: 'id', autoIncrement: false, indexes: [] } },
+      stores: {
+        items: [
+          { key: 11, value: { id: 11, name: 'New11' } },
+          { key: 12, value: { id: 12, at: { __type: 'date', value: 'not-a-date' } } },
+        ],
+      },
+    });
+
+    await expect(importDB({ dbName, backupData: backup, strategy: 'merge' })).rejects.toThrow(
+      /Invalid date/,
+    );
+
+    const records = await readAllFromStore(dbName, 'items');
+    expect(records.map((r) => r.value)).toEqual([{ id: 1, name: 'Old1' }]);
+  });
 });
 
 describe('importDB — onBeforeImport hook', () => {
