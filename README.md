@@ -57,7 +57,7 @@ The library is designed to be **framework-agnostic**: it works in any browser en
 ## Features
 
 - **Generic JSON export format** : Structured `schema` + `stores` mapping for portable, human-readable backups
-- **Type-tagged serialization** : Lossless round-trip for `Uint8Array`, `bigint`, and `Date` using a `__type` tag convention
+- **Type-tagged serialization** : Lossless round-trip for `Uint8Array`, `bigint`, `Date`, `ArrayBuffer`, typed arrays, `Set`, `Map`, and `RegExp` using a `__type` tag convention
 - **Import strategies** : Choose between `"overwrite"` (fresh restore) or `"merge"` (additive sync with existing data)
 - **SSR-safe** : Graceful no-op guards for server-side rendering environments
 - **Dual output** : Ships both ESM and CJS bundles
@@ -143,6 +143,12 @@ The library produces a self-describing JSON structure:
 | `Uint8Array` | `"u8"` | Base64-encoded string |
 | `bigint` | `"bigint"` | String representation |
 | `Date` | `"date"` | ISO 8601 string |
+| `ArrayBuffer` | `"buffer"` | Base64-encoded string |
+| Other typed arrays, `DataView` | `"typed_array"` | `{ "type": "<name>", "data": "<base64>" }` |
+| `Set` | `"set"` | Array of serialized items |
+| `Map` | `"map"` | Array of serialized `[key, value]` pairs |
+| `RegExp` | `"regex"` | `{ "source": "...", "flags": "..." }` |
+| Plain object with its own `__type` key | `"object"` | The object's serialized fields (escapes records that would look like a tag) |
 
 All other JSON-safe values (strings, numbers, booleans, nulls, plain objects, arrays) pass through unchanged.
 
@@ -231,7 +237,38 @@ await importDB({
   backupData: backup,
   strategy: 'merge',
 });
+
+// Selective restore: restore only the listed stores, leaving the rest of the
+// database alone. Pairs naturally with 'merge'.
+await importDB({
+  dbName: 'my-app-db',
+  backupData: backup,
+  strategy: 'merge',
+  storeNames: ['messages', 'contacts'],
+});
+
+// Inspect before importing: return false to abort with nothing written
+await importDB({
+  dbName: 'my-app-db',
+  backupData: backup,
+  strategy: 'overwrite',
+  onBeforeImport: (summary) => {
+    return confirm(
+      `Restore ${summary.recordCounts.messages ?? 0} messages from ` +
+        `${summary.databaseName}, exported ${summary.exportedAt}?`
+    );
+  },
+});
 ```
+
+> **Note:** `storeNames` scopes both schema and records, mirroring `exportDB`. An excluded store is
+> neither populated nor created, so importing with `storeNames` is equivalent to importing a backup
+> that was exported with the same selection. Under `merge`, an excluded store that already exists is
+> left untouched and one that is missing stays missing. Under `overwrite` — which deletes and
+> recreates the database — an excluded store is **absent afterwards even if it existed before**, so
+> prefer `merge` for a partial restore unless the selected stores are meant to be the whole
+> database. Names not present in the backup are ignored, and an empty array selects nothing at all
+> — no records restored and no stores created, so under `overwrite` the result is an empty database.
 
 ### Download as JSON File
 
