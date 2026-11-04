@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { importDB } from '../src/core/importer.js';
 import type { ExportFormat } from '../src/types/index.js';
 import {
@@ -411,6 +411,66 @@ describe('importDB', () => {
   });
 
   // ─── Edge cases ────────────────────────────────────────────────────
+
+  it('merge creates a non-existent database from the backup', async () => {
+    const dbName = uniqueDBName('merge-fresh');
+    const backup = buildBackup({
+      databaseVersion: 3,
+      schema: {
+        items: { keyPath: 'id', autoIncrement: false, indexes: [] },
+      },
+      stores: {
+        items: [{ key: 1, value: { id: 1, name: 'Imported' } }],
+      },
+    });
+
+    await importDB({ dbName, backupData: backup, strategy: 'merge' });
+
+    const records = await readAllFromStore(dbName, 'items');
+    expect(records).toEqual([{ key: 1, value: { id: 1, name: 'Imported' } }]);
+  });
+
+  it('rejects an invalid backup version before probing the database', async () => {
+    const openSpy = vi.spyOn(indexedDB, 'open');
+    const backup = buildBackup({ databaseVersion: 0 });
+
+    try {
+      await expect(
+        importDB({
+          dbName: uniqueDBName('invalid-version'),
+          backupData: backup,
+          strategy: 'merge',
+        }),
+      ).rejects.toThrow(
+        'Invalid backup database version: expected a positive safe integer, received 0.',
+      );
+      expect(openSpy).not.toHaveBeenCalled();
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  it('rejects synchronous errors while creating a database for merge', async () => {
+    const dbName = uniqueDBName('merge-create-error');
+    const backup = buildBackup({ databaseVersion: 1 });
+    const originalOpen = indexedDB.open.bind(indexedDB);
+    let callCount = 0;
+    const openSpy = vi.spyOn(indexedDB, 'open').mockImplementation((name, version) => {
+      callCount += 1;
+      if (callCount === 2) {
+        throw new TypeError('invalid database version');
+      }
+      return version === undefined ? originalOpen(name) : originalOpen(name, version);
+    });
+
+    try {
+      await expect(importDB({ dbName, backupData: backup, strategy: 'merge' })).rejects.toThrow(
+        `Failed to create database "${dbName}": TypeError: invalid database version`,
+      );
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
 
   it('importing backup with empty stores is a no-op', async () => {
     const dbName = uniqueDBName('empty-stores');

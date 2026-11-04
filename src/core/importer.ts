@@ -22,8 +22,8 @@ function deleteDatabase(dbName: string): Promise<void> {
     request.onblocked = () => {
       reject(
         new Error(
-          `Database "${dbName}" deletion blocked. Close all other connections to this database and try again.`
-        )
+          `Database "${dbName}" deletion blocked. Close all other connections to this database and try again.`,
+        ),
       );
     };
   });
@@ -39,7 +39,7 @@ function deleteDatabase(dbName: string): Promise<void> {
 function createStoresFromSchema(
   db: IDBDatabase,
   schema: Record<string, StoreSchema>,
-  strategy: 'overwrite' | 'merge'
+  strategy: 'overwrite' | 'merge',
 ): void {
   for (const [storeName, storeSchema] of Object.entries(schema)) {
     let store: IDBObjectStore;
@@ -95,7 +95,7 @@ function createStoresFromSchema(
 async function openDatabaseForImport(
   dbName: string,
   backupData: ExportFormat,
-  strategy: 'overwrite' | 'merge'
+  strategy: 'overwrite' | 'merge',
 ): Promise<IDBDatabase> {
   if (strategy === 'overwrite') {
     // Delete the existing database entirely
@@ -121,8 +121,8 @@ async function openDatabaseForImport(
       request.onblocked = () => {
         reject(
           new Error(
-            `Database "${dbName}" open blocked. Close all other connections and try again.`
-          )
+            `Database "${dbName}" open blocked. Close all other connections and try again.`,
+          ),
         );
       };
     });
@@ -149,17 +149,21 @@ async function openDatabaseForImport(
 
       // Check if we need to add any new stores
       const backupStoreNames = Object.keys(backupData.schema);
-      const needsNewStores = backupStoreNames.some(
-        (name) => !existingStoreNames.includes(name)
-      );
+      const needsNewStores = backupStoreNames.some((name) => !existingStoreNames.includes(name));
 
       if (!needsNewStores) {
         // No structural changes needed — just open at the current version
         const openRequest = indexedDB.open(dbName, currentVersion);
 
         openRequest.onsuccess = () => resolve(openRequest.result);
-        openRequest.onerror = () => reject(new Error(`Failed to open database "${dbName}": ${String(openRequest.error)}`));
-        openRequest.onblocked = () => reject(new Error(`Database "${dbName}" open blocked. Close all other connections and try again.`));
+        openRequest.onerror = () =>
+          reject(new Error(`Failed to open database "${dbName}": ${String(openRequest.error)}`));
+        openRequest.onblocked = () =>
+          reject(
+            new Error(
+              `Database "${dbName}" open blocked. Close all other connections and try again.`,
+            ),
+          );
         return;
       }
 
@@ -172,24 +176,39 @@ async function openDatabaseForImport(
       };
 
       upgradeRequest.onsuccess = () => resolve(upgradeRequest.result);
-      upgradeRequest.onerror = () => reject(new Error(`Failed to upgrade database "${dbName}": ${String(upgradeRequest.error)}`));
-      upgradeRequest.onblocked = () => reject(new Error(`Database "${dbName}" upgrade blocked. Close all other connections and try again.`));
+      upgradeRequest.onerror = () =>
+        reject(
+          new Error(`Failed to upgrade database "${dbName}": ${String(upgradeRequest.error)}`),
+        );
+      upgradeRequest.onblocked = () =>
+        reject(
+          new Error(
+            `Database "${dbName}" upgrade blocked. Close all other connections and try again.`,
+          ),
+        );
     };
 
     probeRequest.onerror = (event) => {
       event.preventDefault();
       if (!existed) {
         // If the database doesn't exist, create it with the backup's version and schema
-        const createRequest = indexedDB.open(dbName, backupData.databaseVersion);
-        
-        createRequest.onupgradeneeded = () => {
-          const db = createRequest.result;
-          createStoresFromSchema(db, backupData.schema, strategy);
-        };
-        
-        createRequest.onsuccess = () => resolve(createRequest.result);
-        createRequest.onerror = () => reject(new Error(`Failed to create database "${dbName}": ${String(createRequest.error)}`));
-        createRequest.onblocked = () => reject(new Error(`Database "${dbName}" create blocked.`));
+        try {
+          const createRequest = indexedDB.open(dbName, backupData.databaseVersion);
+
+          createRequest.onupgradeneeded = () => {
+            const db = createRequest.result;
+            createStoresFromSchema(db, backupData.schema, strategy);
+          };
+
+          createRequest.onsuccess = () => resolve(createRequest.result);
+          createRequest.onerror = () =>
+            reject(
+              new Error(`Failed to create database "${dbName}": ${String(createRequest.error)}`),
+            );
+          createRequest.onblocked = () => reject(new Error(`Database "${dbName}" create blocked.`));
+        } catch (error) {
+          reject(new Error(`Failed to create database "${dbName}": ${String(error)}`));
+        }
       } else {
         reject(new Error(`Failed to probe database "${dbName}": ${String(probeRequest.error)}`));
       }
@@ -214,7 +233,7 @@ async function openDatabaseForImport(
 function insertRecords(
   store: IDBObjectStore,
   records: Array<{ key: unknown; value: unknown }>,
-  strategy: 'overwrite' | 'merge'
+  strategy: 'overwrite' | 'merge',
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let completed = 0;
@@ -249,9 +268,7 @@ function insertRecords(
 
       request.onerror = () => {
         reject(
-          new Error(
-            `Failed to insert record into store "${store.name}": ${String(request.error)}`
-          )
+          new Error(`Failed to insert record into store "${store.name}": ${String(request.error)}`),
         );
       };
     }
@@ -292,6 +309,12 @@ function insertRecords(
  */
 export async function importDB(options: ImportOptions): Promise<void> {
   const { dbName, backupData, strategy } = options;
+
+  if (!Number.isSafeInteger(backupData.databaseVersion) || backupData.databaseVersion <= 0) {
+    throw new Error(
+      `Invalid backup database version: expected a positive safe integer, received ${String(backupData.databaseVersion)}.`,
+    );
+  }
 
   const db = await openDatabaseForImport(dbName, backupData, strategy);
 

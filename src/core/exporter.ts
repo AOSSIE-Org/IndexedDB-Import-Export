@@ -57,7 +57,9 @@ function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; va
     };
 
     request.onerror = () => {
-      reject(new Error(`Failed to read records from store "${store.name}": ${String(request.error)}`));
+      reject(
+        new Error(`Failed to read records from store "${store.name}": ${String(request.error)}`),
+      );
     };
   });
 }
