@@ -123,6 +123,32 @@ describe('exportDB → importDB round-trip', () => {
     expect(value.samples).toEqual(original.samples);
   });
 
+  it('round-trip preserves NaN, Infinity and -0 in values and keys', async () => {
+    const sourceDB = uniqueDBName('rt-numbers-src');
+    const targetDB = uniqueDBName('rt-numbers-tgt');
+
+    const db = await createTestDB(sourceDB, 1, [
+      {
+        name: 'limits',
+        records: [
+          { key: -Infinity, value: { ratio: NaN, offset: -0 } },
+          { key: Infinity, value: { ratio: 1, offset: 0 } },
+        ],
+      },
+    ]);
+    db.close();
+
+    // Go through JSON text, as a real backup file would.
+    const backup = JSON.parse(JSON.stringify(await exportDB({ dbName: sourceDB })));
+    await importDB({ dbName: targetDB, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(targetDB, 'limits');
+    expect(records.map((record) => record.key)).toEqual([-Infinity, Infinity]);
+    const value = records[0]!.value as { ratio: number; offset: number };
+    expect(value.ratio).toBeNaN();
+    expect(Object.is(value.offset, -0)).toBe(true);
+  });
+
   it('round-trip preserves multiple stores with indexes', async () => {
     const sourceDB = uniqueDBName('rt-schema-src');
     const targetDB = uniqueDBName('rt-schema-tgt');
