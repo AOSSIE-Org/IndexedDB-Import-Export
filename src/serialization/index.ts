@@ -141,8 +141,9 @@ function expectStringFields<K extends string>(
  * - `Map` → `{ __type: "map", value: [[key, value], ...] }`
  * - `RegExp` → `{ __type: "regex", value: { source, flags } }`
  * - plain object with its own `__type` key → `{ __type: "object", value: { ...fields } }`
+ * - `NaN`, `Infinity`, `-Infinity` and `-0` → `{ __type: "number", value: "NaN" }` etc.
  *
- * JSON-safe primitives (string, number, boolean, null) pass through unchanged.
+ * JSON-safe primitives (string, finite number, boolean, null) pass through unchanged.
  * Plain objects and arrays are recursively processed.
  *
  * Cyclic structures are not supported and overflow the stack; values that
@@ -180,6 +181,14 @@ export function serialize(value: unknown): unknown {
 
   if (typeof value === 'bigint') {
     return { __type: SERIALIZATION_TAGS.BIGINT, value: value.toString() } satisfies TaggedValue;
+  }
+
+  // JSON.stringify writes NaN and ±Infinity as null and -0 as 0.
+  if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) {
+    return {
+      __type: SERIALIZATION_TAGS.NUMBER,
+      value: Object.is(value, -0) ? '-0' : String(value),
+    } satisfies TaggedValue;
   }
 
   if (value instanceof Date) {
@@ -256,6 +265,20 @@ export function deserialize(value: unknown): unknown {
 
       case SERIALIZATION_TAGS.BIGINT:
         return BigInt(expectString(tag, value.value));
+
+      case SERIALIZATION_TAGS.NUMBER:
+        switch (value.value) {
+          case 'NaN':
+            return NaN;
+          case 'Infinity':
+            return Infinity;
+          case '-Infinity':
+            return -Infinity;
+          case '-0':
+            return -0;
+          default:
+            throw invalidPayload(tag, value.value);
+        }
 
       case SERIALIZATION_TAGS.DATE: {
         const date = new Date(expectString(tag, value.value));

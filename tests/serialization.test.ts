@@ -251,3 +251,32 @@ describe('RegExp serialization', () => {
     expect(() => deserialize({ __type: 'regex', value: { source: 'a' } })).toThrow(TypeError);
   });
 });
+
+describe('special number serialization', () => {
+  it.each([NaN, Infinity, -Infinity, -0])('round-trips %s', (number) => {
+    expect(Object.is(deserialize(serialize(number)), number)).toBe(true);
+  });
+
+  it('encodes as tagged value with string value', () => {
+    expect(serialize(-Infinity)).toEqual({ __type: 'number', value: '-Infinity' });
+    expect(serialize(-0)).toEqual({ __type: 'number', value: '-0' });
+  });
+
+  it('leaves finite numbers and 0 unchanged', () => {
+    expect(serialize(0)).toBe(0);
+    expect(serialize(-1.5)).toBe(-1.5);
+    expect(serialize(Number.MAX_VALUE)).toBe(Number.MAX_VALUE);
+  });
+
+  it('survives a JSON round-trip inside a record', () => {
+    const record = { ratio: NaN, limits: [-Infinity, Infinity], offset: -0 };
+    const restored = deserialize(JSON.parse(JSON.stringify(serialize(record)))) as typeof record;
+    expect(restored.ratio).toBeNaN();
+    expect(restored.limits).toEqual([-Infinity, Infinity]);
+    expect(Object.is(restored.offset, -0)).toBe(true);
+  });
+
+  it('throws on a malformed payload', () => {
+    expect(() => deserialize({ __type: 'number', value: '12' })).toThrow(TypeError);
+  });
+});
