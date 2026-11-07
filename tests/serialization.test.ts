@@ -136,6 +136,8 @@ describe('user records with a __type key', () => {
     { __type: 'date', value: '2026-01-01' },
     { __type: 'object', value: { nested: true } },
     { __type: 'u8' },
+    { __type: 'ref', value: 1 },
+    { __type: 'array', value: [1, 2] },
   ])('round-trips %j unchanged', (record) => {
     expect(roundTrip(record)).toEqual(record);
   });
@@ -249,5 +251,308 @@ describe('RegExp serialization', () => {
 
   it('throws on a malformed payload', () => {
     expect(() => deserialize({ __type: 'regex', value: { source: 'a' } })).toThrow(TypeError);
+  });
+});
+
+describe('circular reference serialization', () => {
+  const roundTrip = <T>(value: T): T =>
+    deserialize(JSON.parse(JSON.stringify(serialize(value)))) as T;
+
+  it('round-trips a self-referencing array', () => {
+    const arr: unknown[] = [];
+    arr.push(arr);
+    const restored = roundTrip(arr);
+    expect(Array.isArray(restored)).toBe(true);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toBe(restored);
+  });
+
+  it('round-trips a self-referencing plain object', () => {
+    const obj: Record<string, unknown> = { name: 'self' };
+    obj.self = obj;
+    const restored = roundTrip(obj);
+    expect(restored.name).toBe('self');
+    expect(restored.self).toBe(restored);
+  });
+
+  it('round-trips a self-referencing Set', () => {
+    const set = new Set<unknown>();
+    set.add(set);
+    const restored = roundTrip(set);
+    expect(restored).toBeInstanceOf(Set);
+    expect(restored.size).toBe(1);
+    expect(restored.has(restored)).toBe(true);
+  });
+
+  it('round-trips a self-referencing Map', () => {
+    const map = new Map<unknown, unknown>();
+    map.set(map, map);
+    const restored = roundTrip(map);
+    expect(restored).toBeInstanceOf(Map);
+    expect(restored.size).toBe(1);
+    expect(restored.get(restored)).toBe(restored);
+  });
+
+  it('round-trips mutual circular references between plain objects', () => {
+    interface NodeA {
+      name: string;
+      b?: NodeB;
+    }
+    interface NodeB {
+      name: string;
+      a?: NodeA;
+    }
+    const a: NodeA = { name: 'nodeA' };
+    const b: NodeB = { name: 'nodeB', a };
+    a.b = b;
+
+    const restored = roundTrip(a);
+    expect(restored.name).toBe('nodeA');
+    expect(restored.b?.name).toBe('nodeB');
+    expect(restored.b?.a).toBe(restored);
+  });
+
+  it('round-trips mutual circular references between arrays', () => {
+    const arrA: unknown[] = ['A'];
+    const arrB: unknown[] = ['B', arrA];
+    arrA.push(arrB);
+
+    const restored = roundTrip(arrA) as [string, [string, unknown[]]];
+    expect(restored[0]).toBe('A');
+    expect(restored[1][0]).toBe('B');
+    expect(restored[1][1]).toBe(restored);
+  });
+
+  it('round-trips mutual circular references between Sets', () => {
+    const setA = new Set<unknown>(['A']);
+    const setB = new Set<unknown>(['B', setA]);
+    setA.add(setB);
+
+    const restored = roundTrip(setA);
+    expect(restored.has('A')).toBe(true);
+    const items = [...restored];
+    const restoredB = items.find((x) => x instanceof Set && x.has('B')) as Set<unknown>;
+    expect(restoredB).toBeDefined();
+    expect(restoredB.has(restored)).toBe(true);
+  });
+
+  it('round-trips mutual circular references between Maps', () => {
+    const mapA = new Map<string, unknown>([['name', 'A']]);
+    const mapB = new Map<string, unknown>([
+      ['name', 'B'],
+      ['mapA', mapA],
+    ]);
+    mapA.set('mapB', mapB);
+
+    const restored = roundTrip(mapA);
+    expect(restored.get('name')).toBe('A');
+    const restoredB = restored.get('mapB') as Map<string, unknown>;
+    expect(restoredB.get('name')).toBe('B');
+    expect(restoredB.get('mapA')).toBe(restored);
+  });
+
+  it('round-trips a ring buffer / cycle of three nodes (A -> B -> C -> A)', () => {
+    interface RingNode {
+      val: number;
+      next?: RingNode;
+    }
+    const node1: RingNode = { val: 1 };
+    const node2: RingNode = { val: 2 };
+    const node3: RingNode = { val: 3 };
+    node1.next = node2;
+    node2.next = node3;
+    node3.next = node1;
+
+    const restored = roundTrip(node1);
+    expect(restored.val).toBe(1);
+    expect(restored.next?.val).toBe(2);
+    expect(restored.next?.next?.val).toBe(3);
+    expect(restored.next?.next?.next).toBe(restored);
+  });
+
+  it('round-trips heterogeneous cycles (object -> array -> Set -> Map -> object)', () => {
+    const rootObj: Record<string, unknown> = { label: 'root' };
+    const arr: unknown[] = [];
+    const set = new Set<unknown>();
+    const map = new Map<unknown, unknown>();
+
+    rootObj.list = arr;
+    arr.push(set);
+    set.add(map);
+    map.set('backToRoot', rootObj);
+
+    const restored = roundTrip(rootObj);
+    expect(restored.label).toBe('root');
+    const restoredArr = restored.list as unknown[];
+    const restoredSet = restoredArr[0] as Set<unknown>;
+    const restoredMap = [...restoredSet][0] as Map<unknown, unknown>;
+    expect(restoredMap.get('backToRoot')).toBe(restored);
+  });
+});
+
+describe('shared reference and identity preservation', () => {
+  const roundTrip = <T>(value: T): T =>
+    deserialize(JSON.parse(JSON.stringify(serialize(value)))) as T;
+
+  it('preserves shared object identity in multiple array positions', () => {
+    const shared = { id: 1, name: 'shared' };
+    const root = [shared, 'middle', shared];
+
+    const restored = roundTrip(root);
+    expect(restored[0]).toEqual(shared);
+    expect(restored[0]).toBe(restored[2]);
+  });
+
+  it('preserves shared object identity across multiple object properties', () => {
+    const shared = { count: 42 };
+    const root = { a: shared, b: shared, nested: { c: shared } };
+
+    const restored = roundTrip(root);
+    expect(restored.a).toBe(restored.b);
+    expect(restored.a).toBe(restored.nested.c);
+  });
+
+  it('preserves shared identity when the same object is both a Map key and value', () => {
+    const shared = { token: 'xyz' };
+    const map = new Map<unknown, unknown>();
+    map.set(shared, shared);
+
+    const restored = roundTrip(map);
+    const keys = [...restored.keys()];
+    const values = [...restored.values()];
+
+    expect(keys).toHaveLength(1);
+    expect(values).toHaveLength(1);
+    expect(keys[0]).toBe(values[0]);
+    expect(restored.get(keys[0])).toBe(keys[0]);
+  });
+
+  it('preserves shared array identity across multiple containers', () => {
+    const sharedArr = [1, 2, 3];
+    const root = { x: sharedArr, y: sharedArr, inSet: new Set([sharedArr]) };
+
+    const restored = roundTrip(root);
+    expect(restored.x).toBe(restored.y);
+    const setArr = [...restored.inSet][0];
+    expect(restored.x).toBe(setArr);
+  });
+
+  it('preserves shared Set and Map instances', () => {
+    const sharedSet = new Set(['alpha', 'beta']);
+    const sharedMap = new Map([['k', 'v']]);
+    const root = {
+      s1: sharedSet,
+      s2: sharedSet,
+      m1: sharedMap,
+      m2: sharedMap,
+    };
+
+    const restored = roundTrip(root);
+    expect(restored.s1).toBe(restored.s2);
+    expect(restored.m1).toBe(restored.m2);
+  });
+
+  it('preserves user objects containing their own id field alongside reference id', () => {
+    const user = { id: 'user_100', name: 'Alice' };
+    const root = { primary: user, backup: user };
+
+    const restored = roundTrip(root);
+    expect(restored.primary.id).toBe('user_100');
+    expect(restored.primary.name).toBe('Alice');
+    expect(restored.primary).toBe(restored.backup);
+  });
+
+  it('preserves prototype pollution defenses on restored objects with null prototype', () => {
+    const obj: Record<string, unknown> = { normal: 'value' };
+    obj.self = obj;
+
+    const restored = roundTrip(obj);
+    expect(Object.getPrototypeOf(restored)).toBeNull();
+    // Setting __proto__ property does not pollute Object.prototype
+    restored['__proto__'] = { polluted: true };
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+});
+
+describe('reference validation and malformed payload defense', () => {
+  it('throws on a dangling reference ID', () => {
+    expect(() => deserialize({ __type: 'ref', value: 999 })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'ref', value: 999 })).toThrow(/Dangling reference ID/);
+  });
+
+  it('throws on duplicate container IDs in backup payload', () => {
+    const malformed = [
+      { __type: 'object', id: 1, value: { name: 'first' } },
+      { __type: 'object', id: 1, value: { name: 'second' } },
+    ];
+    expect(() => deserialize(malformed)).toThrow(TypeError);
+    expect(() => deserialize(malformed)).toThrow(/Duplicate container ID/);
+  });
+
+  it('throws on forward reference (reference encountered before definition)', () => {
+    const forwardRef = {
+      first: { __type: 'ref', value: 1 },
+      second: { __type: 'object', id: 1, value: { name: 'late' } },
+    };
+    expect(() => deserialize(forwardRef)).toThrow(TypeError);
+    expect(() => deserialize(forwardRef)).toThrow(/Dangling reference ID/);
+  });
+
+  it.each([-1, 0, 1.5, '1', NaN, Infinity, null, undefined, {}, Number.MAX_SAFE_INTEGER + 1])(
+    'throws on invalid reference ID: %j',
+    (invalidId) => {
+      expect(() => deserialize({ __type: 'ref', value: invalidId })).toThrow(TypeError);
+      expect(() => deserialize({ __type: 'ref', value: invalidId })).toThrow(/Invalid "ref" id/);
+    },
+  );
+
+  it.each([-1, 0, 1.5, '1', NaN, Infinity, null, {}, Number.MAX_SAFE_INTEGER + 1])(
+    'throws on invalid container id in tagged object: %j',
+    (invalidId) => {
+      expect(() => deserialize({ __type: 'object', id: invalidId, value: { a: 1 } })).toThrow(
+        TypeError,
+      );
+      expect(() => deserialize({ __type: 'object', id: invalidId, value: { a: 1 } })).toThrow(
+        /Invalid "object" id/,
+      );
+    },
+  );
+
+  it('throws on unsafe integer reference ID', () => {
+    const unsafeId = 2 ** 53 + 1;
+    expect(() => deserialize({ __type: 'ref', value: unsafeId })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'ref', value: unsafeId })).toThrow(/Invalid "ref" id/);
+  });
+
+  it('throws on unsafe integer container ID', () => {
+    const unsafeId = 2 ** 53 + 1;
+    expect(() => deserialize({ __type: 'object', id: unsafeId, value: { a: 1 } })).toThrow(
+      TypeError,
+    );
+    expect(() => deserialize({ __type: 'object', id: unsafeId, value: { a: 1 } })).toThrow(
+      /Invalid "object" id/,
+    );
+  });
+
+  it('throws on malformed array payload', () => {
+    expect(() => deserialize({ __type: 'array', id: 1, value: 'not-an-array' })).toThrow(TypeError);
+  });
+
+  it('throws on malformed object payload', () => {
+    expect(() => deserialize({ __type: 'object', id: 1, value: 42 })).toThrow(TypeError);
+  });
+
+  it('deserializes legacy backups without id fields seamlessly', () => {
+    const legacyBackup = {
+      name: 'legacy',
+      tags: { __type: 'set', value: ['a', 'b'] },
+      dict: { __type: 'map', value: [['k', 'v']] },
+      date: { __type: 'date', value: '2026-01-01T00:00:00.000Z' },
+    };
+    const restored = deserialize(legacyBackup) as typeof legacyBackup;
+    expect(restored.name).toBe('legacy');
+    expect(restored.tags).toEqual(new Set(['a', 'b']));
+    expect(restored.dict).toEqual(new Map([['k', 'v']]));
+    expect(restored.date).toEqual(new Date('2026-01-01T00:00:00.000Z'));
   });
 });

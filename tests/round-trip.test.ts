@@ -225,4 +225,153 @@ describe('exportDB → importDB round-trip', () => {
 
     expect(normalize(mergeRecords)).toEqual(normalize(overwriteRecords));
   });
+
+  it('exportDB → JSON stringify/parse → importDB preserves circular references in records', async () => {
+    const sourceDB = uniqueDBName('rt-cycle-src');
+    const targetDB = uniqueDBName('rt-cycle-tgt');
+
+    // Create cyclic structures
+    const cyclicObj: Record<string, unknown> = { id: 1, name: 'cyclic-node' };
+    cyclicObj.self = cyclicObj;
+
+    const cyclicArr: unknown[] = ['start'];
+    cyclicArr.push(cyclicArr);
+
+    const cyclicSet = new Set<unknown>();
+    cyclicSet.add(cyclicSet);
+
+    const cyclicMap = new Map<unknown, unknown>();
+    cyclicMap.set(cyclicMap, cyclicMap);
+
+    const db = await createTestDB(sourceDB, 1, [
+      {
+        name: 'cycles',
+        keyPath: 'id',
+        records: [
+          {
+            value: {
+              id: 'rec1',
+              obj: cyclicObj,
+              arr: cyclicArr,
+              set: cyclicSet,
+              map: cyclicMap,
+            },
+          },
+        ],
+      },
+    ]);
+    db.close();
+
+    // Export -> serialize to JSON text -> parse JSON text -> import
+    const exported = await exportDB({ dbName: sourceDB });
+    const jsonString = JSON.stringify(exported);
+    const parsedBackup = JSON.parse(jsonString);
+
+    await importDB({
+      dbName: targetDB,
+      backupData: parsedBackup,
+      strategy: 'overwrite',
+    });
+
+    const records = await readAllFromStore(targetDB, 'cycles');
+    expect(records).toHaveLength(1);
+
+    const restored = records[0]!.value as {
+      id: string;
+      obj: Record<string, unknown>;
+      arr: unknown[];
+      set: Set<unknown>;
+      map: Map<unknown, unknown>;
+    };
+
+    // Verify cyclic plain object
+    expect(restored.obj.name).toBe('cyclic-node');
+    expect(restored.obj.self).toBe(restored.obj);
+
+    // Verify cyclic array
+    expect(restored.arr[0]).toBe('start');
+    expect(restored.arr[1]).toBe(restored.arr);
+
+    // Verify cyclic Set
+    expect(restored.set).toBeInstanceOf(Set);
+    expect(restored.set.has(restored.set)).toBe(true);
+
+    // Verify cyclic Map
+    expect(restored.map).toBeInstanceOf(Map);
+    expect(restored.map.get(restored.map)).toBe(restored.map);
+
+    // Re-exporting from target should produce identical structure
+    const reExport = await exportDB({ dbName: targetDB });
+    expect(reExport.stores['cycles']).toHaveLength(1);
+    expect(reExport.backupVersion).toBe(exported.backupVersion);
+  });
+
+  it('exportDB → JSON stringify/parse → importDB preserves shared references across record fields', async () => {
+    const sourceDB = uniqueDBName('rt-shared-src');
+    const targetDB = uniqueDBName('rt-shared-tgt');
+
+    const sharedUser = { userId: 'u123', role: 'admin' };
+    const sharedConfig = [10, 20, 30];
+
+    const mapWithSharedKeyVal = new Map<unknown, unknown>();
+    mapWithSharedKeyVal.set(sharedUser, sharedUser);
+
+    const db = await createTestDB(sourceDB, 1, [
+      {
+        name: 'sharedStore',
+        keyPath: 'id',
+        records: [
+          {
+            value: {
+              id: 'doc1',
+              author: sharedUser,
+              editor: sharedUser,
+              configA: sharedConfig,
+              configB: sharedConfig,
+              userMap: mapWithSharedKeyVal,
+            },
+          },
+        ],
+      },
+    ]);
+    db.close();
+
+    const exported = await exportDB({ dbName: sourceDB });
+    const jsonString = JSON.stringify(exported);
+    const parsedBackup = JSON.parse(jsonString);
+
+    await importDB({
+      dbName: targetDB,
+      backupData: parsedBackup,
+      strategy: 'overwrite',
+    });
+
+    const records = await readAllFromStore(targetDB, 'sharedStore');
+    expect(records).toHaveLength(1);
+
+    const doc = records[0]!.value as {
+      id: string;
+      author: typeof sharedUser;
+      editor: typeof sharedUser;
+      configA: number[];
+      configB: number[];
+      userMap: Map<unknown, unknown>;
+    };
+
+    // Shared plain object identity preserved
+    expect(doc.author).toBe(doc.editor);
+    expect(doc.author.userId).toBe('u123');
+
+    // Shared array identity preserved
+    expect(doc.configA).toBe(doc.configB);
+    expect(doc.configA).toEqual([10, 20, 30]);
+
+    // Map key and value identity preserved
+    const mapKeys = [...doc.userMap.keys()];
+    const mapValues = [...doc.userMap.values()];
+    expect(mapKeys[0]).toBe(doc.author);
+    expect(mapValues[0]).toBe(doc.author);
+    expect(mapKeys[0]).toBe(mapValues[0]);
+    expect(doc.userMap.get(mapKeys[0])).toBe(mapKeys[0]);
+  });
 });
