@@ -271,4 +271,27 @@ describe('exportDB', () => {
     expect(exportedDate.getTime()).toBeGreaterThanOrEqual(before.getTime());
     expect(exportedDate.getTime()).toBeLessThanOrEqual(after.getTime());
   });
+
+  it('rejects and releases database connection when record serialization throws', async () => {
+    const dbName = uniqueDBName('serialization-error');
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'metrics',
+        keyPath: 'id',
+        records: [{ value: { id: 1, recordedAt: new Date(NaN) } }],
+      },
+    ]);
+    db.close();
+
+    await expect(exportDB({ dbName })).rejects.toThrow(RangeError);
+
+    // Verify the database connection was closed and deleteDatabase is not blocked
+    await new Promise<void>((resolve, reject) => {
+      const delReq = indexedDB.deleteDatabase(dbName);
+      delReq.onsuccess = () => resolve();
+      delReq.onerror = () => reject(delReq.error);
+      delReq.onblocked = () =>
+        reject(new Error('deleteDatabase was blocked: connection leaked open'));
+    });
+  });
 });
