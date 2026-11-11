@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { importDB } from '../src/core/importer.js';
+import { exportDB } from '../src/core/exporter.js';
 import type { ExportFormat, ImportSummary } from '../src/types/index.js';
 import {
   setupFakeIDB,
@@ -1017,5 +1018,93 @@ describe('importDB — onBeforeImport hook', () => {
     const records = await readAllFromStore(dbName, 'items');
     expect(records).toHaveLength(1);
     expect(records[0]!.value).toEqual({ id: 1, name: 'Original' });
+  });
+});
+
+describe('importDB — blocked "overwrite"', () => {
+  it('leaves the database intact after the blocking connection closes', async () => {
+    const dbName = uniqueDBName('blocked-overwrite');
+
+    // An open connection that ignores versionchange, like another tab would
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'users',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Alice' } }],
+      },
+    ]);
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: { users: { keyPath: 'id', autoIncrement: false, indexes: [] } },
+      stores: { users: [{ key: 2, value: { id: 2, name: 'Bob' } }] },
+    });
+
+    await expect(importDB({ dbName, backupData: backup, strategy: 'overwrite' })).rejects.toThrow(
+      /blocked/,
+    );
+
+    // Closing the blocking connection must not let a queued delete run
+    db.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const after = await exportDB({ dbName });
+    expect(Object.keys(after.schema)).toEqual(['users']);
+    expect(after.stores['users']!.map((r) => r.value)).toEqual([{ id: 1, name: 'Alice' }]);
+  });
+
+  it('proceeds when the other connection closes itself on versionchange', async () => {
+    const dbName = uniqueDBName('versionchange-close');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'users',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Alice' } }],
+      },
+    ]);
+    // Well-behaved apps close their connection when another one needs to upgrade or delete
+    db.onversionchange = () => db.close();
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: { users: { keyPath: 'id', autoIncrement: false, indexes: [] } },
+      stores: { users: [{ key: 2, value: { id: 2, name: 'Bob' } }] },
+    });
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(dbName, 'users');
+    expect(records.map((r) => r.value)).toEqual([{ id: 2, name: 'Bob' }]);
+  });
+
+  it('succeeds once the blocking connection is closed and the import is retried', async () => {
+    const dbName = uniqueDBName('blocked-retry');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'users',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Alice' } }],
+      },
+    ]);
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: { users: { keyPath: 'id', autoIncrement: false, indexes: [] } },
+      stores: { users: [{ key: 2, value: { id: 2, name: 'Bob' } }] },
+    });
+
+    await expect(importDB({ dbName, backupData: backup, strategy: 'overwrite' })).rejects.toThrow(
+      /blocked/,
+    );
+
+    db.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await importDB({ dbName, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(dbName, 'users');
+    expect(records.map((r) => r.value)).toEqual([{ id: 2, name: 'Bob' }]);
   });
 });

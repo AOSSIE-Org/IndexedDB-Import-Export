@@ -67,6 +67,69 @@ function deleteDatabase(dbName: string): Promise<void> {
 }
 
 /**
+ * Make sure no other connection holds the database open before it is deleted.
+ *
+ * A blocked `deleteDatabase()` request cannot be cancelled: it stays queued and
+ * deletes the database as soon as the other connections close, even after the
+ * import has rejected. A blocked version-change request *can* be cancelled,
+ * because its upgrade transaction can be aborted. So this opens the database at
+ * the next version first. If that request is blocked, it rejects right away and
+ * aborts the upgrade if it runs later, which leaves the database unchanged.
+ *
+ * @param dbName - The name of the database that is about to be deleted.
+ * @returns A promise that resolves when no other connection is open.
+ */
+function ensureNoOtherConnections(dbName: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const probeRequest = indexedDB.open(dbName);
+
+    probeRequest.onerror = () => {
+      reject(new Error(`Failed to open database "${dbName}": ${String(probeRequest.error)}`));
+    };
+
+    probeRequest.onsuccess = () => {
+      const probeDb = probeRequest.result;
+      const nextVersion = probeDb.version + 1;
+      probeDb.close();
+
+      let blocked = false;
+      const request = indexedDB.open(dbName, nextVersion);
+
+      request.onupgradeneeded = () => {
+        if (blocked) {
+          // The import already rejected; cancel the queued upgrade.
+          request.transaction?.abort();
+        }
+      };
+
+      request.onsuccess = () => {
+        request.result.close();
+        resolve();
+      };
+
+      request.onerror = (event) => {
+        if (blocked) {
+          // Expected AbortError from the cancelled upgrade above.
+          event.preventDefault();
+          return;
+        }
+        reject(new Error(`Failed to open database "${dbName}": ${String(request.error)}`));
+      };
+
+      request.onblocked = () => {
+        blocked = true;
+        reject(
+          new Error(
+            `Overwrite of database "${dbName}" blocked: another connection is open. ` +
+              'The database was not changed. Close all other connections to this database and try again.',
+          ),
+        );
+      };
+    };
+  });
+}
+
+/**
  * Narrow a store-keyed record from the backup to the caller's `storeNames` selection.
  *
  * Used for both `schema` and `stores`, so a selection scopes structure and data
@@ -162,6 +225,10 @@ async function openDatabaseForImport(
   strategy: 'overwrite' | 'merge',
 ): Promise<IDBDatabase> {
   if (strategy === 'overwrite') {
+    // Fail before deleting if another connection would block the delete,
+    // because a blocked delete cannot be cancelled.
+    await ensureNoOtherConnections(dbName);
+
     // Delete the existing database entirely
     await deleteDatabase(dbName);
 
