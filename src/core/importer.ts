@@ -41,6 +41,11 @@ function buildImportSummary(
 /**
  * Delete an IndexedDB database by name.
  *
+ * A blocked delete cannot be cancelled: it stays queued and runs as soon as the
+ * other connections close. So `blocked` is not treated as a failure. The promise
+ * stays pending until the delete actually runs, and the import then goes on to
+ * restore the backup, instead of rejecting while the delete is still queued.
+ *
  * @param dbName - The name of the database to delete.
  * @returns A promise that resolves when the database is deleted.
  */
@@ -55,13 +60,68 @@ function deleteDatabase(dbName: string): Promise<void> {
     request.onerror = () => {
       reject(new Error(`Failed to delete database "${dbName}": ${String(request.error)}`));
     };
+  });
+}
 
-    request.onblocked = () => {
-      reject(
-        new Error(
-          `Database "${dbName}" deletion blocked. Close all other connections to this database and try again.`
-        )
-      );
+/**
+ * Make sure no other connection holds the database open before it is deleted.
+ *
+ * A blocked `deleteDatabase()` request cannot be cancelled: it stays queued and
+ * deletes the database as soon as the other connections close, even after the
+ * import has rejected. A blocked version-change request *can* be cancelled,
+ * because its upgrade transaction can be aborted. So this opens the database at
+ * the next version first. If that request is blocked, it rejects right away and
+ * aborts the upgrade if it runs later, which leaves the database unchanged.
+ *
+ * @param dbName - The name of the database that is about to be deleted.
+ * @returns A promise that resolves when no other connection is open.
+ */
+function ensureNoOtherConnections(dbName: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const probeRequest = indexedDB.open(dbName);
+
+    probeRequest.onerror = () => {
+      reject(new Error(`Failed to open database "${dbName}": ${String(probeRequest.error)}`));
+    };
+
+    probeRequest.onsuccess = () => {
+      const probeDb = probeRequest.result;
+      const nextVersion = probeDb.version + 1;
+      probeDb.close();
+
+      let blocked = false;
+      const request = indexedDB.open(dbName, nextVersion);
+
+      request.onupgradeneeded = () => {
+        if (blocked) {
+          // The import already rejected; cancel the queued upgrade.
+          request.transaction?.abort();
+        }
+      };
+
+      request.onsuccess = () => {
+        request.result.close();
+        resolve();
+      };
+
+      request.onerror = (event) => {
+        if (blocked) {
+          // Expected AbortError from the cancelled upgrade above.
+          event.preventDefault();
+          return;
+        }
+        reject(new Error(`Failed to open database "${dbName}": ${String(request.error)}`));
+      };
+
+      request.onblocked = () => {
+        blocked = true;
+        reject(
+          new Error(
+            `Overwrite of database "${dbName}" blocked: another connection is open. ` +
+              'The database was not changed. Close all other connections to this database and try again.',
+          ),
+        );
+      };
     };
   });
 }
@@ -162,10 +222,18 @@ async function openDatabaseForImport(
   strategy: 'overwrite' | 'merge',
 ): Promise<IDBDatabase> {
   if (strategy === 'overwrite') {
-    // Delete the existing database entirely
+    // Fail before deleting if another connection would block the delete,
+    // because a blocked delete cannot be cancelled.
+    await ensureNoOtherConnections(dbName);
+
+    // Delete the existing database entirely. A connection opened after the
+    // check above can still block the delete; it then waits rather than rejects.
     await deleteDatabase(dbName);
 
-    // Recreate with the backup's version and schema
+    // Recreate with the backup's version and schema. Once the database is
+    // deleted, the import must finish, so a blocked open waits as well: if it
+    // rejected, the queued upgrade would still run later and leave the database
+    // recreated but empty.
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(dbName, databaseVersion);
 
@@ -180,14 +248,6 @@ async function openDatabaseForImport(
 
       request.onerror = () => {
         reject(new Error(`Failed to create database "${dbName}": ${String(request.error)}`));
-      };
-
-      request.onblocked = () => {
-        reject(
-          new Error(
-            `Database "${dbName}" open blocked. Close all other connections and try again.`
-          )
-        );
       };
     });
   }
