@@ -1107,4 +1107,57 @@ describe('importDB — blocked "overwrite"', () => {
     const records = await readAllFromStore(dbName, 'users');
     expect(records.map((r) => r.value)).toEqual([{ id: 2, name: 'Bob' }]);
   });
+
+  it('waits instead of rejecting when a connection reopens after the check', async () => {
+    const dbName = uniqueDBName('reopen-on-versionchange');
+
+    const db = await createTestDB(dbName, 1, [
+      {
+        name: 'users',
+        keyPath: 'id',
+        records: [{ value: { id: 1, name: 'Alice' } }],
+      },
+    ]);
+
+    // An app that closes on versionchange and reconnects at once. The reopened
+    // connection is queued behind the import's check, so it is open again by
+    // the time the import deletes the database, and it ignores versionchange.
+    let reopened: IDBDatabase | undefined;
+    db.onversionchange = () => {
+      db.close();
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => {
+        reopened = request.result;
+      };
+    };
+
+    const backup = buildBackup({
+      databaseVersion: 1,
+      schema: { users: { keyPath: 'id', autoIncrement: false, indexes: [] } },
+      stores: { users: [{ key: 2, value: { id: 2, name: 'Bob' } }] },
+    });
+
+    let settled: 'resolved' | 'rejected' | undefined;
+    const importing = importDB({ dbName, backupData: backup, strategy: 'overwrite' }).then(
+      () => {
+        settled = 'resolved';
+      },
+      (error: unknown) => {
+        settled = 'rejected';
+        throw error;
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reopened).toBeDefined();
+    // A blocked delete cannot be cancelled, so the import must not give up on it
+    expect(settled).toBeUndefined();
+
+    reopened!.close();
+    await importing;
+
+    expect(settled).toBe('resolved');
+    const records = await readAllFromStore(dbName, 'users');
+    expect(records.map((r) => r.value)).toEqual([{ id: 2, name: 'Bob' }]);
+  });
 });

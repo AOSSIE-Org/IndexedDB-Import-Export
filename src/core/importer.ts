@@ -41,6 +41,11 @@ function buildImportSummary(
 /**
  * Delete an IndexedDB database by name.
  *
+ * A blocked delete cannot be cancelled: it stays queued and runs as soon as the
+ * other connections close. So `blocked` is not treated as a failure. The promise
+ * stays pending until the delete actually runs, and the import then goes on to
+ * restore the backup, instead of rejecting while the delete is still queued.
+ *
  * @param dbName - The name of the database to delete.
  * @returns A promise that resolves when the database is deleted.
  */
@@ -54,14 +59,6 @@ function deleteDatabase(dbName: string): Promise<void> {
 
     request.onerror = () => {
       reject(new Error(`Failed to delete database "${dbName}": ${String(request.error)}`));
-    };
-
-    request.onblocked = () => {
-      reject(
-        new Error(
-          `Database "${dbName}" deletion blocked. Close all other connections to this database and try again.`
-        )
-      );
     };
   });
 }
@@ -229,10 +226,14 @@ async function openDatabaseForImport(
     // because a blocked delete cannot be cancelled.
     await ensureNoOtherConnections(dbName);
 
-    // Delete the existing database entirely
+    // Delete the existing database entirely. A connection opened after the
+    // check above can still block the delete; it then waits rather than rejects.
     await deleteDatabase(dbName);
 
-    // Recreate with the backup's version and schema
+    // Recreate with the backup's version and schema. Once the database is
+    // deleted, the import must finish, so a blocked open waits as well: if it
+    // rejected, the queued upgrade would still run later and leave the database
+    // recreated but empty.
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(dbName, databaseVersion);
 
@@ -247,14 +248,6 @@ async function openDatabaseForImport(
 
       request.onerror = () => {
         reject(new Error(`Failed to create database "${dbName}": ${String(request.error)}`));
-      };
-
-      request.onblocked = () => {
-        reject(
-          new Error(
-            `Database "${dbName}" open blocked. Close all other connections and try again.`
-          )
-        );
       };
     });
   }
