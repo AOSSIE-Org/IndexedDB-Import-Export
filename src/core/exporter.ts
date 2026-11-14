@@ -44,15 +44,19 @@ function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; va
     const request = store.openCursor();
 
     request.onsuccess = () => {
-      const cursor = request.result;
-      if (cursor) {
-        records.push({
-          key: serialize(cursor.primaryKey),
-          value: serialize(cursor.value),
-        });
-        cursor.continue();
-      } else {
-        resolve(records);
+      try {
+        const cursor = request.result;
+        if (cursor) {
+          records.push({
+            key: serialize(cursor.primaryKey),
+            value: serialize(cursor.value),
+          });
+          cursor.continue();
+        } else {
+          resolve(records);
+        }
+      } catch (error) {
+        reject(error);
       }
     };
 
