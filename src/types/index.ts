@@ -40,10 +40,13 @@ export const SERIALIZATION_TAGS = {
   REG_EXP: 'regex',
   TYPED_ARRAY: 'typed_array',
   OBJECT: 'object',
+  ARRAY: 'array',
+  REF: 'ref',
 } as const;
 
 /**
- * A type-tagged value used to preserve types that JSON.stringify cannot handle natively.
+ * A type-tagged value used to preserve types that JSON.stringify cannot handle natively,
+ * as well as cycles and shared references.
  *
  * Supported `__type` values:
  * - `"u8"` — Uint8Array (value is a base64-encoded string)
@@ -51,14 +54,18 @@ export const SERIALIZATION_TAGS = {
  * - `"date"` — Date (value is an ISO 8601 string)
  * - `"buffer"` — ArrayBuffer (value is a base64-encoded string)
  * - `"typed_array"` — other typed arrays and DataView (value is `{ type, data }`, with `data` base64-encoded)
- * - `"set"` — Set (value is an array of serialized items)
- * - `"map"` — Map (value is an array of serialized `[key, value]` pairs)
+ * - `"set"` — Set (value is an array of serialized items, optional `id`)
+ * - `"map"` — Map (value is an array of serialized `[key, value]` pairs, optional `id`)
  * - `"regex"` — RegExp (value is `{ source, flags }`)
- * - `"object"` — escaped plain object that has its own `__type` key (value is its serialized fields)
+ * - `"object"` — escaped plain object or shared/cyclic plain object (value is its serialized fields, optional `id`)
+ * - `"array"` — Array participating in cycles or shared references (value is an array of serialized items, with `id`)
+ * - `"ref"` — Reference pointer to an already-defined object ID (value is the numeric ID)
  */
 export interface TaggedValue {
   __type: string;
   value: unknown;
+  /** Unique reference identifier for shared or circular containers. */
+  id?: number;
 }
 
 /**
