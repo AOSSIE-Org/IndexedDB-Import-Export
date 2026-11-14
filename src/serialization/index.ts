@@ -141,9 +141,12 @@ function expectStringFields<K extends string>(
  * - `Map` → `{ __type: "map", value: [[key, value], ...] }`
  * - `RegExp` → `{ __type: "regex", value: { source, flags } }`
  * - plain object with its own `__type` key → `{ __type: "object", value: { ...fields } }`
+ * - `undefined` → `{ __type: "undefined", value: "" }`
  *
  * JSON-safe primitives (string, number, boolean, null) pass through unchanged.
  * Plain objects and arrays are recursively processed.
+ *
+ * Array holes are written as `undefined`, so a sparse array comes back dense.
  *
  * Cyclic structures are not supported and overflow the stack; values that
  * appear more than once are copied, not shared, on restore.
@@ -178,6 +181,12 @@ export function serialize(value: unknown): unknown {
     } satisfies TaggedValue;
   }
 
+  // JSON.stringify drops object fields that are undefined and writes undefined
+  // array, Set and Map entries as null.
+  if (value === undefined) {
+    return { __type: SERIALIZATION_TAGS.UNDEFINED, value: '' } satisfies TaggedValue;
+  }
+
   if (typeof value === 'bigint') {
     return { __type: SERIALIZATION_TAGS.BIGINT, value: value.toString() } satisfies TaggedValue;
   }
@@ -201,9 +210,10 @@ export function serialize(value: unknown): unknown {
     } satisfies TaggedValue;
   }
 
-  // Recursively process arrays
+  // Recursively process arrays. Array.from visits holes too (as undefined),
+  // where map would skip them and JSON.stringify would write them as null.
   if (Array.isArray(value)) {
-    return value.map((item) => serialize(item));
+    return Array.from(value, (item) => serialize(item));
   }
 
   // Recursively process plain objects
@@ -256,6 +266,12 @@ export function deserialize(value: unknown): unknown {
 
       case SERIALIZATION_TAGS.BIGINT:
         return BigInt(expectString(tag, value.value));
+
+      case SERIALIZATION_TAGS.UNDEFINED:
+        if (value.value !== '') {
+          throw invalidPayload(tag, value.value);
+        }
+        return undefined;
 
       case SERIALIZATION_TAGS.DATE: {
         const date = new Date(expectString(tag, value.value));
