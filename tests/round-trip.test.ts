@@ -123,6 +123,25 @@ describe('exportDB → importDB round-trip', () => {
     expect(value.samples).toEqual(original.samples);
   });
 
+  it('round-trip preserves undefined fields and array entries', async () => {
+    const sourceDB = uniqueDBName('rt-undefined-src');
+    const targetDB = uniqueDBName('rt-undefined-tgt');
+
+    const original = { id: 1, deletedAt: undefined, slots: ['a', undefined, 'c'] };
+
+    const db = await createTestDB(sourceDB, 1, [
+      { name: 'items', keyPath: 'id', records: [{ value: original }] },
+    ]);
+    db.close();
+
+    // Go through JSON text, as a real backup file would.
+    const backup = JSON.parse(JSON.stringify(await exportDB({ dbName: sourceDB })));
+    await importDB({ dbName: targetDB, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(targetDB, 'items');
+    expect(records[0]!.value).toStrictEqual(original);
+  });
+
   it('round-trip preserves multiple stores with indexes', async () => {
     const sourceDB = uniqueDBName('rt-schema-src');
     const targetDB = uniqueDBName('rt-schema-tgt');

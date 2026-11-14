@@ -251,3 +251,35 @@ describe('RegExp serialization', () => {
     expect(() => deserialize({ __type: 'regex', value: { source: 'a' } })).toThrow(TypeError);
   });
 });
+
+describe('undefined serialization', () => {
+  it('encodes undefined as a tagged value', () => {
+    expect(serialize(undefined)).toEqual({ __type: 'undefined', value: '' });
+    expect(deserialize({ __type: 'undefined', value: '' })).toBeUndefined();
+  });
+
+  it('survives a JSON round-trip inside a record', () => {
+    const sparse: unknown[] = [1];
+    sparse[2] = 3;
+    const record = {
+      note: undefined,
+      list: [1, undefined, 3],
+      sparse,
+      tags: new Set([undefined]),
+      lookup: new Map([['missing', undefined]]),
+    };
+    const restored = deserialize(JSON.parse(JSON.stringify(serialize(record)))) as typeof record;
+    expect(Object.keys(restored)).toContain('note');
+    expect(restored.note).toBeUndefined();
+    expect(restored.list).toStrictEqual([1, undefined, 3]);
+    // A hole comes back as undefined, not as null.
+    expect(restored.sparse).toStrictEqual([1, undefined, 3]);
+    expect([...restored.tags]).toStrictEqual([undefined]);
+    expect(restored.lookup.has('missing')).toBe(true);
+    expect(restored.lookup.get('missing')).toBeUndefined();
+  });
+
+  it('throws on a malformed payload', () => {
+    expect(() => deserialize({ __type: 'undefined', value: 'x' })).toThrow(TypeError);
+  });
+});

@@ -149,6 +149,7 @@ The library produces a self-describing JSON structure:
 | `Map` | `"map"` | Array of serialized `[key, value]` pairs |
 | `RegExp` | `"regex"` | `{ "source": "...", "flags": "..." }` |
 | Plain object with its own `__type` key | `"object"` | The object's serialized fields (escapes records that would look like a tag) |
+| `undefined` | `"undefined"` | `""` (keeps undefined fields and array, `Set` and `Map` entries, which JSON would drop or turn into `null`) |
 
 All other JSON-safe values (strings, numbers, booleans, nulls, plain objects, arrays) pass through unchanged.
 
