@@ -22,6 +22,14 @@ export interface StoreSchema {
   autoIncrement: boolean;
   /** The indexes defined on this object store. */
   indexes: IndexSchema[];
+  /**
+   * For `autoIncrement` stores: the key the store's key generator would assign
+   * to the next record at export time. The generator never moves backwards, so
+   * this can be higher than the largest key in the backup when the newest
+   * records were deleted. Restoring it keeps a restored store from reusing the
+   * keys of deleted records. Absent for other stores and in older backups.
+   */
+  keyGeneratorNext?: number;
 }
 
 /**

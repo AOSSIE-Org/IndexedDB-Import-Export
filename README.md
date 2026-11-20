@@ -136,6 +136,8 @@ The library produces a self-describing JSON structure:
 }
 ```
 
+For `autoIncrement` stores, the schema also includes `keyGeneratorNext`: the key the store's key generator would assign next. It can be higher than the largest key in the backup when the newest records were deleted, and `importDB` uses it so a restored store never reuses the keys of deleted records. Backups without it still import as before.
+
 ### Tagged Types
 
 | Source Type | `__type` | Serialized `value` |
