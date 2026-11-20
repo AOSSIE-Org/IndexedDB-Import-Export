@@ -65,6 +65,60 @@ function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; va
 }
 
 /**
+ * Read the next key that each auto-increment store's key generator would assign.
+ *
+ * IndexedDB has no API to read a key generator directly, so this adds an empty
+ * placeholder record to each auto-increment store, reads the key it was given,
+ * then aborts the transaction. Aborting rolls back both the placeholder and the
+ * generator, so the database is left unchanged.
+ *
+ * A store whose probe fails (for example because its generator is exhausted)
+ * is left out of the result, and its backup simply has no `keyGeneratorNext`.
+ *
+ * @param db - The open database.
+ * @param storeNames - The auto-increment stores being exported (must not be empty).
+ * @returns The next generated key for each auto-increment store, by store name.
+ */
+function readKeyGenerators(db: IDBDatabase, storeNames: string[]): Promise<Record<string, number>> {
+  return new Promise((resolve) => {
+    const result: Record<string, number> = Object.create(null);
+    const transaction = db.transaction(storeNames, 'readwrite');
+    transaction.onabort = () => resolve(result);
+
+    let pending = storeNames.length;
+    // Abort synchronously from the last request callback, while the transaction
+    // is still active, so it can never auto-commit the placeholders.
+    const settle = () => {
+      pending--;
+      if (pending === 0) {
+        transaction.abort();
+      }
+    };
+
+    for (const storeName of storeNames) {
+      let request: IDBRequest<IDBValidKey>;
+      try {
+        request = transaction.objectStore(storeName).add({});
+      } catch {
+        settle();
+        continue;
+      }
+      request.onsuccess = () => {
+        if (typeof request.result === 'number') {
+          result[storeName] = request.result;
+        }
+        settle();
+      };
+      request.onerror = (event) => {
+        // Keep one failed probe from aborting the others early.
+        event.preventDefault();
+        settle();
+      };
+    }
+  });
+}
+
+/**
  * Open an IndexedDB database by name.
  *
  * @param dbName - The name of the database to open.
@@ -139,6 +193,15 @@ export async function exportDB(options: ExportOptions): Promise<ExportFormat> {
       };
     }
 
+    // Read the key generators of auto-increment stores first, in a separate
+    // transaction that is rolled back. Only those stores are locked for writing.
+    const schemaTransaction = db.transaction(targetStores, 'readonly');
+    const autoIncrementStores = targetStores.filter(
+      (storeName) => schemaTransaction.objectStore(storeName).autoIncrement,
+    );
+    const keyGenerators: Record<string, number> =
+      autoIncrementStores.length > 0 ? await readKeyGenerators(db, autoIncrementStores) : {};
+
     // Open a single read-only transaction across all target stores
     const transaction = db.transaction(targetStores, 'readonly');
     const schema: Record<string, StoreSchema> = {};
@@ -148,6 +211,10 @@ export async function exportDB(options: ExportOptions): Promise<ExportFormat> {
     const storePromises = targetStores.map(async (storeName) => {
       const store = transaction.objectStore(storeName);
       schema[storeName] = extractStoreSchema(store);
+      const keyGeneratorNext = keyGenerators[storeName];
+      if (keyGeneratorNext !== undefined) {
+        schema[storeName].keyGeneratorNext = keyGeneratorNext;
+      }
       stores[storeName] = await readAllRecords(store);
     });
 
