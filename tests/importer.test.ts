@@ -1106,6 +1106,8 @@ describe('importDB — blocked "overwrite"', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const after = await exportDB({ dbName });
+    // The aborted probe upgrade must not bump the version
+    expect(after.databaseVersion).toBe(1);
     expect(Object.keys(after.schema)).toEqual(['users']);
     expect(after.stores['users']!.map((r) => r.value)).toEqual([{ id: 1, name: 'Alice' }]);
   });
@@ -1194,26 +1196,42 @@ describe('importDB — blocked "overwrite"', () => {
       stores: { users: [{ key: 2, value: { id: 2, name: 'Bob' } }] },
     });
 
-    let settled: 'resolved' | 'rejected' | undefined;
+    // Observe the real delete request, so the test checks the pending state
+    // only after the delete has actually reported `blocked`.
+    let markDeleteBlocked!: () => void;
+    const deleteBlocked = new Promise<void>((resolve) => {
+      markDeleteBlocked = resolve;
+    });
+    const originalDelete = indexedDB.deleteDatabase.bind(indexedDB);
+    const deleteSpy = vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation((name) => {
+      const request = originalDelete(name);
+      request.addEventListener('blocked', () => markDeleteBlocked());
+      return request;
+    });
+
+    let outcome: { status: 'resolved' } | { status: 'rejected'; error: unknown } | undefined;
     const importing = importDB({ dbName, backupData: backup, strategy: 'overwrite' }).then(
       () => {
-        settled = 'resolved';
+        outcome = { status: 'resolved' };
       },
       (error: unknown) => {
-        settled = 'rejected';
-        throw error;
+        outcome = { status: 'rejected', error };
       },
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(reopened).toBeDefined();
-    // A blocked delete cannot be cancelled, so the import must not give up on it
-    expect(settled).toBeUndefined();
+    try {
+      // An early rejection settles `importing` first instead of hanging here
+      await Promise.race([deleteBlocked, importing]);
+      expect(reopened).toBeDefined();
+      // A blocked delete cannot be cancelled, so the import must not give up on it
+      expect(outcome).toBeUndefined();
+    } finally {
+      reopened?.close();
+      deleteSpy.mockRestore();
+    }
 
-    reopened!.close();
     await importing;
-
-    expect(settled).toBe('resolved');
+    expect(outcome).toEqual({ status: 'resolved' });
     const records = await readAllFromStore(dbName, 'users');
     expect(records.map((r) => r.value)).toEqual([{ id: 2, name: 'Bob' }]);
   });

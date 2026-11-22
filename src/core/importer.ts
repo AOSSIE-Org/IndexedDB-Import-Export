@@ -70,8 +70,9 @@ function deleteDatabase(dbName: string): Promise<void> {
  * deletes the database as soon as the other connections close, even after the
  * import has rejected. A blocked version-change request *can* be cancelled,
  * because its upgrade transaction can be aborted. So this opens the database at
- * the next version first. If that request is blocked, it rejects right away and
- * aborts the upgrade if it runs later, which leaves the database unchanged.
+ * the next version first and always aborts that upgrade, so the database keeps
+ * its version on every path. If the request is blocked, it rejects right away;
+ * the upgrade is still aborted if it runs later.
  *
  * @param dbName - The name of the database that is about to be deleted.
  * @returns A promise that resolves when no other connection is open.
@@ -89,25 +90,37 @@ function ensureNoOtherConnections(dbName: string): Promise<void> {
       const nextVersion = probeDb.version + 1;
       probeDb.close();
 
+      const blockedError = new Error(
+        `Overwrite of database "${dbName}" blocked: another connection is open. ` +
+          'The database was not changed. Close all other connections to this database and try again.',
+      );
+
       let blocked = false;
+      let upgradeAborted = false;
       const request = indexedDB.open(dbName, nextVersion);
 
       request.onupgradeneeded = () => {
-        if (blocked) {
-          // The import already rejected; cancel the queued upgrade.
-          request.transaction?.abort();
-        }
+        // Never commit the probe upgrade. Aborting it on every path keeps the
+        // database at its original version, even if the delete later fails.
+        upgradeAborted = true;
+        request.transaction?.abort();
       };
 
       request.onsuccess = () => {
+        // Only reached when the upgrade did not run: another connection moved
+        // the database to `nextVersion` between the two opens, and it may still
+        // be open. Treat this like a blocked probe instead of deleting.
         request.result.close();
-        resolve();
+        reject(blockedError);
       };
 
       request.onerror = (event) => {
-        if (blocked) {
-          // Expected AbortError from the cancelled upgrade above.
+        if (upgradeAborted && request.error?.name === 'AbortError') {
+          // Expected error from the deliberate abort above.
           event.preventDefault();
+          if (!blocked) {
+            resolve();
+          }
           return;
         }
         reject(new Error(`Failed to open database "${dbName}": ${String(request.error)}`));
@@ -115,12 +128,7 @@ function ensureNoOtherConnections(dbName: string): Promise<void> {
 
       request.onblocked = () => {
         blocked = true;
-        reject(
-          new Error(
-            `Overwrite of database "${dbName}" blocked: another connection is open. ` +
-              'The database was not changed. Close all other connections to this database and try again.',
-          ),
-        );
+        reject(blockedError);
       };
     };
   });
