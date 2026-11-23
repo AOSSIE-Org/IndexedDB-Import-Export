@@ -132,6 +132,40 @@ describe('autoIncrement key generator', () => {
       });
     }
 
+    for (const keyPath of ['id', null]) {
+      it(`restores the key generator of an empty store (keyPath: ${String(keyPath)})`, async () => {
+        const source = uniqueDBName('kg-empty-src');
+        const target = uniqueDBName('kg-empty-dst');
+        const db = await createTestDB(source, 1, [{ name: 'notes', keyPath, autoIncrement: true }]);
+        db.close();
+        for (let i = 1; i <= 5; i++) {
+          await addAndGetKey(source, 'notes', { text: `note ${i}` });
+        }
+        await deleteKeys(source, 'notes', IDBKeyRange.lowerBound(1));
+        expect(await readAllFromStore(source, 'notes')).toEqual([]);
+
+        const backup = await exportAsJSON(source);
+        expect(backup.schema['notes']!.keyGeneratorNext).toBe(6);
+        await importDB({ dbName: target, backupData: backup, strategy: 'overwrite' });
+
+        expect(await readAllFromStore(target, 'notes')).toEqual([]);
+        expect(await addAndGetKey(target, 'notes', { text: 'new' })).toBe(6);
+      });
+    }
+
+    it('accepts a keyGeneratorNext at the IndexedDB limit of 2 ** 53', async () => {
+      const source = uniqueDBName('kg-limit-src');
+      const target = uniqueDBName('kg-limit-dst');
+      await createStoreWithDeletedTail(source, 'id');
+      const backup = await exportAsJSON(source);
+      (backup.schema['notes'] as { keyGeneratorNext?: number }).keyGeneratorNext = 2 ** 53;
+
+      await expect(
+        importDB({ dbName: target, backupData: backup, strategy: 'overwrite' }),
+      ).resolves.toBeUndefined();
+      expect(await readAllFromStore(target, 'notes')).toHaveLength(3);
+    });
+
     it('does not replace a record that already uses the placeholder key', async () => {
       const source = uniqueDBName('kg-keep-src');
       const target = uniqueDBName('kg-keep-dst');
@@ -204,7 +238,7 @@ describe('autoIncrement key generator', () => {
       expect(await addAndGetKey(target, 'notes', { text: 'new' })).toBe(4);
     });
 
-    for (const invalid of [0, -1, 1.5, '6', Number.MAX_SAFE_INTEGER + 1]) {
+    for (const invalid of [0, -1, 1.5, '6', 2 ** 53 + 2]) {
       it(`rejects keyGeneratorNext ${JSON.stringify(invalid)} before touching the database`, async () => {
         const source = uniqueDBName('kg-invalid-src');
         const target = uniqueDBName('kg-invalid-dst');

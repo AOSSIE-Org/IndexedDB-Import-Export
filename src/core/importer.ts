@@ -346,15 +346,25 @@ function insertRecords(
  * array key path never reaches this function.
  */
 function placeholderWithKey(keyPath: string, key: number): Record<string, unknown> {
+  // defineProperty creates own data properties, so a path segment such as
+  // "__proto__" is stored as a key instead of setting the prototype.
+  const setOwn = (target: Record<string, unknown>, name: string, value: unknown) => {
+    Object.defineProperty(target, name, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  };
   const root: Record<string, unknown> = {};
   let target = root;
   const parts = keyPath.split('.');
   for (const part of parts.slice(0, -1)) {
     const next: Record<string, unknown> = {};
-    target[part] = next;
+    setOwn(target, part, next);
     target = next;
   }
-  target[parts[parts.length - 1]!] = key;
+  setOwn(target, parts[parts.length - 1]!, key);
   return root;
 }
 
@@ -472,9 +482,10 @@ export async function importDB(options: ImportOptions): Promise<void> {
 
   for (const [storeName, storeSchema] of Object.entries(backupData.schema)) {
     const next = storeSchema.keyGeneratorNext;
-    if (next !== undefined && (!Number.isSafeInteger(next) || next < 1)) {
+    // IndexedDB key generators go up to 2 ** 53, which is one past Number.MAX_SAFE_INTEGER.
+    if (next !== undefined && (!Number.isInteger(next) || next < 1 || next > 2 ** 53)) {
       throw new Error(
-        `Invalid keyGeneratorNext for store "${storeName}": expected a positive safe integer, received ${String(next)}.`,
+        `Invalid keyGeneratorNext for store "${storeName}": expected an integer from 1 to 2 ** 53, received ${String(next)}.`,
       );
     }
   }

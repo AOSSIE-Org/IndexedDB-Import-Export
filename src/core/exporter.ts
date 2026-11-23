@@ -30,90 +30,106 @@ function extractStoreSchema(store: IDBObjectStore): StoreSchema {
 }
 
 /**
- * Read all records from an object store using a cursor.
+ * Read the schema, the records and the next generated key of every target store
+ * in one `readwrite` transaction, so all three describe the same state.
  *
- * Each record is serialized using type-tagged serialization to ensure
- * non-JSON-safe types (Uint8Array, bigint, Date) are preserved.
- *
- * @param store - The IDBObjectStore to read records from.
- * @returns A promise that resolves to an array of serialized records.
- */
-function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; value: unknown }>> {
-  return new Promise((resolve, reject) => {
-    const records: Array<{ key: unknown; value: unknown }> = [];
-    const request = store.openCursor();
-
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (cursor) {
-        records.push({
-          key: serialize(cursor.primaryKey),
-          value: serialize(cursor.value),
-        });
-        cursor.continue();
-      } else {
-        resolve(records);
-      }
-    };
-
-    request.onerror = () => {
-      reject(
-        new Error(`Failed to read records from store "${store.name}": ${String(request.error)}`),
-      );
-    };
-  });
-}
-
-/**
- * Read the next key that each auto-increment store's key generator would assign.
- *
- * IndexedDB has no API to read a key generator directly, so this adds an empty
- * placeholder record to each auto-increment store, reads the key it was given,
- * then aborts the transaction. Aborting rolls back both the placeholder and the
- * generator, so the database is left unchanged.
+ * Requests run in the order they are placed. For each store, `getAllKeys()` and
+ * `getAll()` are placed before its probe `add({})`, so the records never include
+ * the placeholder. The probe reports the key the generator would assign next.
+ * After the last result arrives, the transaction is aborted, which rolls back
+ * every placeholder and generator change, so the database is left unchanged.
  *
  * A store whose probe fails (for example because its generator is exhausted)
- * is left out of the result, and its backup simply has no `keyGeneratorNext`.
+ * gets no `keyGeneratorNext` in the result.
  *
  * @param db - The open database.
- * @param storeNames - The auto-increment stores being exported (must not be empty).
- * @returns The next generated key for each auto-increment store, by store name.
+ * @param storeNames - The stores to read.
+ * @returns The schema, the serialized records, and the next key per auto-increment store.
  */
-function readKeyGenerators(db: IDBDatabase, storeNames: string[]): Promise<Record<string, number>> {
-  return new Promise((resolve) => {
-    const result: Record<string, number> = Object.create(null);
+function readSnapshot(
+  db: IDBDatabase,
+  storeNames: string[],
+): Promise<{
+  schema: Record<string, StoreSchema>;
+  stores: Record<string, Array<{ key: unknown; value: unknown }>>;
+  keyGenerators: Record<string, number>;
+}> {
+  return new Promise((resolve, reject) => {
     const transaction = db.transaction(storeNames, 'readwrite');
-    transaction.onabort = () => resolve(result);
+    const schema: Record<string, StoreSchema> = {};
+    const keys: Record<string, IDBValidKey[]> = {};
+    const values: Record<string, unknown[]> = {};
+    const keyGenerators: Record<string, number> = Object.create(null);
 
-    let pending = storeNames.length;
-    // Abort synchronously from the last request callback, while the transaction
-    // is still active, so it can never auto-commit the placeholders.
+    let outstanding = 0;
+    // Abort from the last request callback, while the transaction is still
+    // active, so nothing can auto-commit the placeholders.
     const settle = () => {
-      pending--;
-      if (pending === 0) {
+      outstanding--;
+      if (outstanding === 0) {
         transaction.abort();
       }
     };
-
-    for (const storeName of storeNames) {
-      let request: IDBRequest<IDBValidKey>;
-      try {
-        request = transaction.objectStore(storeName).add({});
-      } catch {
-        settle();
-        continue;
-      }
+    const track = <T>(request: IDBRequest<T>, onResult: (result: T) => void, isProbe = false) => {
+      outstanding++;
       request.onsuccess = () => {
-        if (typeof request.result === 'number') {
-          result[storeName] = request.result;
-        }
+        onResult(request.result);
         settle();
       };
       request.onerror = (event) => {
-        // Keep one failed probe from aborting the others early.
-        event.preventDefault();
-        settle();
+        if (isProbe) {
+          // A failed probe leaves out keyGeneratorNext; it must not fail the export.
+          event.preventDefault();
+          settle();
+          return;
+        }
+        reject(new Error(`Failed to read records: ${String(request.error)}`));
       };
+    };
+
+    transaction.onabort = () => {
+      const stores: Record<string, Array<{ key: unknown; value: unknown }>> = {};
+      for (const storeName of storeNames) {
+        stores[storeName] = (keys[storeName] ?? []).map((key, i) => ({
+          key: serialize(key),
+          value: serialize(values[storeName]?.[i]),
+        }));
+      }
+      resolve({ schema, stores, keyGenerators });
+    };
+
+    for (const storeName of storeNames) {
+      const store = transaction.objectStore(storeName);
+      schema[storeName] = extractStoreSchema(store);
+
+      track(store.getAllKeys(), (result) => {
+        keys[storeName] = result;
+      });
+      track(store.getAll(), (result) => {
+        values[storeName] = result;
+      });
+
+      if (store.autoIncrement) {
+        let probe: IDBRequest<IDBValidKey>;
+        try {
+          probe = store.add({});
+        } catch {
+          continue;
+        }
+        track(
+          probe,
+          (result) => {
+            if (typeof result === 'number') {
+              keyGenerators[storeName] = result;
+            }
+          },
+          true,
+        );
+      }
+    }
+
+    if (outstanding === 0) {
+      transaction.abort();
     }
   });
 }
@@ -193,32 +209,10 @@ export async function exportDB(options: ExportOptions): Promise<ExportFormat> {
       };
     }
 
-    // Read the key generators of auto-increment stores first, in a separate
-    // transaction that is rolled back. Only those stores are locked for writing.
-    const schemaTransaction = db.transaction(targetStores, 'readonly');
-    const autoIncrementStores = targetStores.filter(
-      (storeName) => schemaTransaction.objectStore(storeName).autoIncrement,
-    );
-    const keyGenerators: Record<string, number> =
-      autoIncrementStores.length > 0 ? await readKeyGenerators(db, autoIncrementStores) : {};
-
-    // Open a single read-only transaction across all target stores
-    const transaction = db.transaction(targetStores, 'readonly');
-    const schema: Record<string, StoreSchema> = {};
-    const stores: Record<string, Array<{ key: unknown; value: unknown }>> = {};
-
-    // Process each store: extract schema and read records
-    const storePromises = targetStores.map(async (storeName) => {
-      const store = transaction.objectStore(storeName);
-      schema[storeName] = extractStoreSchema(store);
-      const keyGeneratorNext = keyGenerators[storeName];
-      if (keyGeneratorNext !== undefined) {
-        schema[storeName].keyGeneratorNext = keyGeneratorNext;
-      }
-      stores[storeName] = await readAllRecords(store);
-    });
-
-    await Promise.all(storePromises);
+    const { schema, stores, keyGenerators } = await readSnapshot(db, targetStores);
+    for (const [storeName, keyGeneratorNext] of Object.entries(keyGenerators)) {
+      schema[storeName]!.keyGeneratorNext = keyGeneratorNext;
+    }
 
     return {
       backupVersion: BACKUP_VERSION,
