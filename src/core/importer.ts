@@ -340,6 +340,87 @@ function insertRecords(
 }
 
 /**
+ * Build a placeholder value that holds `key` at `keyPath`, for an inline-key store.
+ *
+ * Auto-increment stores only allow a single, non-empty string key path, so an
+ * array key path never reaches this function.
+ */
+function placeholderWithKey(keyPath: string, key: number): Record<string, unknown> {
+  // defineProperty creates own data properties, so a path segment such as
+  // "__proto__" is stored as a key instead of setting the prototype.
+  const setOwn = (target: Record<string, unknown>, name: string, value: unknown) => {
+    Object.defineProperty(target, name, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  };
+  const root: Record<string, unknown> = {};
+  let target = root;
+  const parts = keyPath.split('.');
+  for (const part of parts.slice(0, -1)) {
+    const next: Record<string, unknown> = {};
+    setOwn(target, part, next);
+    target = next;
+  }
+  setOwn(target, parts[parts.length - 1]!, key);
+  return root;
+}
+
+/**
+ * Move an auto-increment store's key generator up to the position recorded in the
+ * backup, so the restored store does not hand out keys of records that were
+ * deleted before the export.
+ *
+ * Writing a record with an explicit numeric key raises the generator above that
+ * key, and deleting the record again does not lower it. The placeholder is only
+ * written when no record already uses that key, so existing data is never
+ * replaced. A generator that is already further ahead is left as it is.
+ *
+ * Must be called in the same transaction as, and right after, {@link insertRecords}.
+ */
+function restoreKeyGenerator(
+  store: IDBObjectStore,
+  storeSchema: StoreSchema | undefined,
+): Promise<void> {
+  const next = storeSchema?.keyGeneratorNext;
+  if (!store.autoIncrement || next === undefined || next <= 1) {
+    return Promise.resolve();
+  }
+  const key = next - 1;
+
+  return new Promise((resolve, reject) => {
+    const fail = (request: IDBRequest) => () =>
+      reject(
+        new Error(
+          `Failed to restore the key generator of store "${store.name}": ${String(request.error)}`,
+        ),
+      );
+
+    const countRequest = store.count(key);
+    countRequest.onerror = fail(countRequest);
+    countRequest.onsuccess = () => {
+      if (countRequest.result > 0) {
+        resolve();
+        return;
+      }
+      const keyPath = store.keyPath;
+      const putRequest =
+        typeof keyPath === 'string'
+          ? store.put(placeholderWithKey(keyPath, key))
+          : store.put({}, key);
+      putRequest.onerror = fail(putRequest);
+      putRequest.onsuccess = () => {
+        const deleteRequest = store.delete(key);
+        deleteRequest.onerror = fail(deleteRequest);
+        deleteRequest.onsuccess = () => resolve();
+      };
+    };
+  });
+}
+
+/**
  * Import data from a JSON backup into an IndexedDB database.
  *
  * Supports two strategies:
@@ -399,6 +480,16 @@ export async function importDB(options: ImportOptions): Promise<void> {
     );
   }
 
+  for (const [storeName, storeSchema] of Object.entries(backupData.schema)) {
+    const next = storeSchema.keyGeneratorNext;
+    // IndexedDB key generators go up to 2 ** 53, which is one past Number.MAX_SAFE_INTEGER.
+    if (next !== undefined && (!Number.isInteger(next) || next < 1 || next > 2 ** 53)) {
+      throw new Error(
+        `Invalid keyGeneratorNext for store "${storeName}": expected an integer from 1 to 2 ** 53, received ${String(next)}.`,
+      );
+    }
+  }
+
   // A selection scopes the whole import. Narrowing the schema as well as the records
   // is what keeps a partial restore from quietly recreating the stores the caller
   // asked to leave out, and makes this equivalent to importing a backup that was
@@ -437,7 +528,12 @@ export async function importDB(options: ImportOptions): Promise<void> {
     const insertPromises = targetStores.map((storeName) => {
       const store = transaction.objectStore(storeName);
       const records = stores[storeName] ?? [];
-      return insertRecords(store, records, strategy);
+      // Both functions queue their requests synchronously, so the key generator
+      // is restored after every record has been written.
+      return Promise.all([
+        insertRecords(store, records, strategy),
+        restoreKeyGenerator(store, schema[storeName]),
+      ]);
     });
 
     await Promise.all(insertPromises);

@@ -30,37 +30,107 @@ function extractStoreSchema(store: IDBObjectStore): StoreSchema {
 }
 
 /**
- * Read all records from an object store using a cursor.
+ * Read the schema, the records and the next generated key of every target store
+ * in one `readwrite` transaction, so all three describe the same state.
  *
- * Each record is serialized using type-tagged serialization to ensure
- * non-JSON-safe types (Uint8Array, bigint, Date) are preserved.
+ * Requests run in the order they are placed. For each store, `getAllKeys()` and
+ * `getAll()` are placed before its probe `add({})`, so the records never include
+ * the placeholder. The probe reports the key the generator would assign next.
+ * After the last result arrives, the transaction is aborted, which rolls back
+ * every placeholder and generator change, so the database is left unchanged.
  *
- * @param store - The IDBObjectStore to read records from.
- * @returns A promise that resolves to an array of serialized records.
+ * A store whose probe fails (for example because its generator is exhausted)
+ * gets no `keyGeneratorNext` in the result.
+ *
+ * @param db - The open database.
+ * @param storeNames - The stores to read.
+ * @returns The schema, the serialized records, and the next key per auto-increment store.
  */
-function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; value: unknown }>> {
+function readSnapshot(
+  db: IDBDatabase,
+  storeNames: string[],
+): Promise<{
+  schema: Record<string, StoreSchema>;
+  stores: Record<string, Array<{ key: unknown; value: unknown }>>;
+  keyGenerators: Record<string, number>;
+}> {
   return new Promise((resolve, reject) => {
-    const records: Array<{ key: unknown; value: unknown }> = [];
-    const request = store.openCursor();
+    const transaction = db.transaction(storeNames, 'readwrite');
+    const schema: Record<string, StoreSchema> = {};
+    const keys: Record<string, IDBValidKey[]> = {};
+    const values: Record<string, unknown[]> = {};
+    const keyGenerators: Record<string, number> = Object.create(null);
 
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (cursor) {
-        records.push({
-          key: serialize(cursor.primaryKey),
-          value: serialize(cursor.value),
-        });
-        cursor.continue();
-      } else {
-        resolve(records);
+    let outstanding = 0;
+    // Abort from the last request callback, while the transaction is still
+    // active, so nothing can auto-commit the placeholders.
+    const settle = () => {
+      outstanding--;
+      if (outstanding === 0) {
+        transaction.abort();
       }
     };
-
-    request.onerror = () => {
-      reject(
-        new Error(`Failed to read records from store "${store.name}": ${String(request.error)}`),
-      );
+    const track = <T>(request: IDBRequest<T>, onResult: (result: T) => void, isProbe = false) => {
+      outstanding++;
+      request.onsuccess = () => {
+        onResult(request.result);
+        settle();
+      };
+      request.onerror = (event) => {
+        if (isProbe) {
+          // A failed probe leaves out keyGeneratorNext; it must not fail the export.
+          event.preventDefault();
+          settle();
+          return;
+        }
+        reject(new Error(`Failed to read records: ${String(request.error)}`));
+      };
     };
+
+    transaction.onabort = () => {
+      const stores: Record<string, Array<{ key: unknown; value: unknown }>> = {};
+      for (const storeName of storeNames) {
+        stores[storeName] = (keys[storeName] ?? []).map((key, i) => ({
+          key: serialize(key),
+          value: serialize(values[storeName]?.[i]),
+        }));
+      }
+      resolve({ schema, stores, keyGenerators });
+    };
+
+    for (const storeName of storeNames) {
+      const store = transaction.objectStore(storeName);
+      schema[storeName] = extractStoreSchema(store);
+
+      track(store.getAllKeys(), (result) => {
+        keys[storeName] = result;
+      });
+      track(store.getAll(), (result) => {
+        values[storeName] = result;
+      });
+
+      if (store.autoIncrement) {
+        let probe: IDBRequest<IDBValidKey>;
+        try {
+          probe = store.add({});
+        } catch {
+          continue;
+        }
+        track(
+          probe,
+          (result) => {
+            if (typeof result === 'number') {
+              keyGenerators[storeName] = result;
+            }
+          },
+          true,
+        );
+      }
+    }
+
+    if (outstanding === 0) {
+      transaction.abort();
+    }
   });
 }
 
@@ -139,19 +209,10 @@ export async function exportDB(options: ExportOptions): Promise<ExportFormat> {
       };
     }
 
-    // Open a single read-only transaction across all target stores
-    const transaction = db.transaction(targetStores, 'readonly');
-    const schema: Record<string, StoreSchema> = {};
-    const stores: Record<string, Array<{ key: unknown; value: unknown }>> = {};
-
-    // Process each store: extract schema and read records
-    const storePromises = targetStores.map(async (storeName) => {
-      const store = transaction.objectStore(storeName);
-      schema[storeName] = extractStoreSchema(store);
-      stores[storeName] = await readAllRecords(store);
-    });
-
-    await Promise.all(storePromises);
+    const { schema, stores, keyGenerators } = await readSnapshot(db, targetStores);
+    for (const [storeName, keyGeneratorNext] of Object.entries(keyGenerators)) {
+      schema[storeName]!.keyGeneratorNext = keyGeneratorNext;
+    }
 
     return {
       backupVersion: BACKUP_VERSION,
