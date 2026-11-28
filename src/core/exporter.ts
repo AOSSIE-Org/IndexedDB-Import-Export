@@ -1,5 +1,5 @@
 import type { ExportFormat, ExportOptions, IndexSchema, StoreSchema } from '../types/index.js';
-import { serialize, BACKUP_VERSION } from '../serialization/index.js';
+import { serializeAsync, BACKUP_VERSION } from '../serialization/index.js';
 
 /**
  * Extract the schema for a single object store, including all its indexes.
@@ -32,8 +32,10 @@ function extractStoreSchema(store: IDBObjectStore): StoreSchema {
 /**
  * Read all records from an object store using a cursor.
  *
- * Each record is serialized using type-tagged serialization to ensure
- * non-JSON-safe types (Uint8Array, bigint, Date) are preserved.
+ * Records are collected first, then serialized with type-tagged serialization
+ * so non-JSON-safe types (Uint8Array, bigint, Date, Blob, File) are preserved.
+ * Blob and File bytes are read asynchronously, which is why serialization
+ * happens after the cursor has finished.
  *
  * @param store - The IDBObjectStore to read records from.
  * @returns A promise that resolves to an array of serialized records.
@@ -46,14 +48,17 @@ function readAllRecords(store: IDBObjectStore): Promise<Array<{ key: unknown; va
     request.onsuccess = () => {
       const cursor = request.result;
       if (cursor) {
-        records.push({
-          key: serialize(cursor.primaryKey),
-          value: serialize(cursor.value),
-        });
+        records.push({ key: cursor.primaryKey, value: cursor.value });
         cursor.continue();
-      } else {
-        resolve(records);
+        return;
       }
+
+      Promise.all(
+        records.map(async (record) => ({
+          key: await serializeAsync(record.key),
+          value: await serializeAsync(record.value),
+        })),
+      ).then(resolve, reject);
     };
 
     request.onerror = () => {

@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { Blob as NodeBlob, File as NodeFile } from 'node:buffer';
 import { exportDB } from '../src/core/exporter.js';
 import { importDB } from '../src/core/importer.js';
 import {
@@ -11,6 +12,18 @@ import {
 setupFakeIDB();
 
 describe('exportDB → importDB round-trip', () => {
+  // happy-dom's Blob/File are not structured-cloneable, so fake-indexeddb
+  // would reduce them to plain objects before export. Node's implementations
+  // are cloneable and let this test exercise the real end-to-end path.
+  beforeAll(() => {
+    vi.stubGlobal('Blob', NodeBlob);
+    vi.stubGlobal('File', NodeFile);
+  });
+
+  afterAll(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('export → overwrite import → re-export produces identical data', async () => {
     const sourceDB = uniqueDBName('rt-source');
     const targetDB = uniqueDBName('rt-target');
@@ -121,6 +134,36 @@ describe('exportDB → importDB round-trip', () => {
     expect(value.raw).toBeInstanceOf(ArrayBuffer);
     expect(new Uint8Array(value.raw)).toEqual(new Uint8Array([1, 2, 3]));
     expect(value.samples).toEqual(original.samples);
+  });
+
+  it('round-trip preserves Blob values', async () => {
+    const sourceDB = uniqueDBName('rt-blob-src');
+    const targetDB = uniqueDBName('rt-blob-tgt');
+
+    const blobBytes = new Uint8Array([0, 1, 2, 255]);
+    const original = {
+      id: 'rec1',
+      avatar: new Blob([blobBytes], { type: 'image/png' }),
+    };
+
+    const db = await createTestDB(sourceDB, 1, [
+      { name: 'files', keyPath: 'id', records: [{ value: original }] },
+    ]);
+    db.close();
+
+    // Go through JSON text, as a real backup file would.
+    const backup = JSON.parse(JSON.stringify(await exportDB({ dbName: sourceDB })));
+    expect(backup.stores['files']![0].value).toMatchObject({
+      avatar: { __type: 'blob' },
+    });
+
+    await importDB({ dbName: targetDB, backupData: backup, strategy: 'overwrite' });
+
+    const records = await readAllFromStore(targetDB, 'files');
+    const value = records[0]!.value as typeof original;
+    expect(value.avatar).toBeInstanceOf(Blob);
+    expect(value.avatar.type).toBe('image/png');
+    expect(new Uint8Array(await value.avatar.arrayBuffer())).toEqual(blobBytes);
   });
 
   it('round-trip preserves multiple stores with indexes', async () => {
