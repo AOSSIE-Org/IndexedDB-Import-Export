@@ -56,6 +56,62 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Identify a Blob or File by its `Symbol.toStringTag` or, for DOM
+ * implementations that omit it, by the Blob API surface.
+ *
+ * `instanceof` is not reliable here because IndexedDB (and `fake-indexeddb`)
+ * may hand back values created by a different realm. The built-in tag is
+ * stable across realms and does not require the `Blob`/`File` globals to exist.
+ */
+function blobKind(value: unknown): 'blob' | 'file' | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const tag = Object.prototype.toString.call(value);
+  if (tag === '[object File]') {
+    return 'file';
+  }
+  if (tag === '[object Blob]') {
+    return 'blob';
+  }
+
+  // Some DOM implementations (including the one used by happy-dom) do not set
+  // Symbol.toStringTag on their Blob/File classes. Fall back to the Blob API
+  // surface so cross-realm and polyfilled values are still recognized.
+  const candidate = value as Partial<Blob> & Partial<File>;
+  if (
+    typeof candidate.arrayBuffer === 'function' &&
+    typeof candidate.slice === 'function' &&
+    typeof candidate.type === 'string' &&
+    typeof candidate.size === 'number'
+  ) {
+    if (typeof candidate.name === 'string' && typeof candidate.lastModified === 'number') {
+      return 'file';
+    }
+    return 'blob';
+  }
+
+  return null;
+}
+
+/**
+ * Check for a Blob without assuming the global exists (for example in older
+ * Node.js versions or a minimal test environment).
+ */
+function isBlobValue(value: unknown): value is Blob {
+  return blobKind(value) === 'blob';
+}
+
+/**
+ * Check for a File without assuming the global exists. File extends Blob, so
+ * this must be tested before {@link isBlobValue}.
+ */
+function isFileValue(value: unknown): value is File {
+  return blobKind(value) === 'file';
+}
+
+/**
  * Tags whose `value` is a JSON array or object rather than a string.
  */
 const STRUCTURED_TAGS: ReadonlySet<string> = new Set([
@@ -64,6 +120,8 @@ const STRUCTURED_TAGS: ReadonlySet<string> = new Set([
   SERIALIZATION_TAGS.REG_EXP,
   SERIALIZATION_TAGS.TYPED_ARRAY,
   SERIALIZATION_TAGS.OBJECT,
+  SERIALIZATION_TAGS.BLOB,
+  SERIALIZATION_TAGS.FILE,
 ]);
 
 type ArrayBufferViewConstructor = new (buffer: ArrayBuffer) => ArrayBufferView;
@@ -201,6 +259,23 @@ export function serialize(value: unknown): unknown {
     } satisfies TaggedValue;
   }
 
+  // Reading a Blob's bytes is asynchronous, so the synchronous serializer
+  // cannot encode it. Fail loudly instead of returning an object that
+  // JSON.stringify would silently reduce to `{}`.
+  if (isFileValue(value)) {
+    throw new TypeError(
+      'Cannot serialize a File synchronously because reading its bytes is asynchronous. ' +
+        'Use serializeAsync() or exportDB() instead.',
+    );
+  }
+
+  if (isBlobValue(value)) {
+    throw new TypeError(
+      'Cannot serialize a Blob synchronously because reading its bytes is asynchronous. ' +
+        'Use serializeAsync() or exportDB() instead.',
+    );
+  }
+
   // Recursively process arrays
   if (Array.isArray(value)) {
     return value.map((item) => serialize(item));
@@ -219,6 +294,78 @@ export function serialize(value: unknown): unknown {
 
   // JSON-safe primitives pass through unchanged
   return value;
+}
+
+/**
+ * Recursively serialize a value, including `Blob` and `File` values whose bytes
+ * must be read asynchronously.
+ *
+ * This is the asynchronous counterpart to {@link serialize}. It handles every
+ * type {@link serialize} handles, plus:
+ * - `Blob` → `{ __type: "blob", value: { type, data: "<base64>" } }`
+ * - `File` → `{ __type: "file", value: { type, name, lastModified, data: "<base64>" } }`
+ *
+ * `exportDB()` uses this function so files stored in IndexedDB survive a
+ * backup instead of being silently replaced by `{}` in the JSON output.
+ *
+ * @param value - The value to serialize.
+ * @returns A promise resolving to the serialized value, safe for `JSON.stringify`.
+ */
+export async function serializeAsync(value: unknown): Promise<unknown> {
+  if (isFileValue(value)) {
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    return {
+      __type: SERIALIZATION_TAGS.FILE,
+      value: {
+        type: value.type,
+        name: value.name,
+        lastModified: value.lastModified,
+        data: uint8ArrayToBase64(bytes),
+      },
+    } satisfies TaggedValue;
+  }
+
+  if (isBlobValue(value)) {
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    return {
+      __type: SERIALIZATION_TAGS.BLOB,
+      value: { type: value.type, data: uint8ArrayToBase64(bytes) },
+    } satisfies TaggedValue;
+  }
+
+  if (value instanceof Set) {
+    const items = await Promise.all([...value].map((item) => serializeAsync(item)));
+    return { __type: SERIALIZATION_TAGS.SET, value: items } satisfies TaggedValue;
+  }
+
+  if (value instanceof Map) {
+    const entries = await Promise.all(
+      [...value].map(
+        async ([key, entryValue]) =>
+          [await serializeAsync(key), await serializeAsync(entryValue)] as [unknown, unknown],
+      ),
+    );
+    return { __type: SERIALIZATION_TAGS.MAP, value: entries } satisfies TaggedValue;
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((item) => serializeAsync(item)));
+  }
+
+  if (isPlainObject(value)) {
+    const fields: Record<string, unknown> = Object.create(null);
+    for (const key of Object.keys(value)) {
+      fields[key] = await serializeAsync(value[key]);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, '__type')) {
+      return { __type: SERIALIZATION_TAGS.OBJECT, value: fields } satisfies TaggedValue;
+    }
+    return fields;
+  }
+
+  // Everything else (Uint8Array, ArrayBuffer, typed arrays, bigint, Date,
+  // RegExp, and JSON-safe primitives) is handled synchronously.
+  return serialize(value);
 }
 
 /**
@@ -306,6 +453,35 @@ export function deserialize(value: unknown): unknown {
           'flags',
         ] as const);
         return new RegExp(source, flags);
+      }
+
+      case SERIALIZATION_TAGS.BLOB: {
+        const { type, data } = expectStringFields(tag, value.value, ['type', 'data'] as const);
+        return new Blob([toArrayBuffer(base64ToUint8Array(data))], { type });
+      }
+
+      case SERIALIZATION_TAGS.FILE: {
+        if (!isPlainObject(value.value)) {
+          throw invalidPayload(tag, value.value);
+        }
+        const { type, name, data } = expectStringFields(tag, value.value, [
+          'type',
+          'name',
+          'data',
+        ] as const);
+        const lastModified = value.value['lastModified'];
+        if (typeof lastModified !== 'number' || !Number.isFinite(lastModified)) {
+          throw invalidPayload(tag, value.value);
+        }
+        if (typeof File === 'undefined') {
+          throw new Error(
+            'Cannot restore a File because the File constructor is unavailable in this environment.',
+          );
+        }
+        return new File([toArrayBuffer(base64ToUint8Array(data))], name, {
+          type,
+          lastModified,
+        });
       }
 
       case SERIALIZATION_TAGS.OBJECT:

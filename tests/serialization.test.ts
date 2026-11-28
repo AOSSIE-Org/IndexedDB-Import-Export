@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { serialize, deserialize } from '../src/serialization/index.js';
+import { serialize, serializeAsync, deserialize } from '../src/serialization/index.js';
 
 describe('bigint serialization', () => {
   it('round-trips zero', () => {
@@ -249,5 +249,105 @@ describe('RegExp serialization', () => {
 
   it('throws on a malformed payload', () => {
     expect(() => deserialize({ __type: 'regex', value: { source: 'a' } })).toThrow(TypeError);
+  });
+});
+
+describe('Blob and File serialization', () => {
+  const blobBytes = new Uint8Array([0, 1, 2, 255]);
+  const makeBlob = () => new Blob([blobBytes], { type: 'image/png' });
+  const makeFile = () =>
+    new File(['hello world'], 'greeting.txt', {
+      type: 'text/plain',
+      lastModified: 1710000000000,
+    });
+
+  it('serialize() throws a clear error instead of silently dropping Blob and File values', () => {
+    expect(() => serialize(makeBlob())).toThrow(/serializeAsync/);
+    expect(() => serialize(makeFile())).toThrow(/serializeAsync/);
+  });
+
+  it('serializeAsync() encodes a Blob with its MIME type and bytes', async () => {
+    expect(await serializeAsync(makeBlob())).toEqual({
+      __type: 'blob',
+      value: { type: 'image/png', data: 'AAEC/w==' },
+    });
+  });
+
+  it('round-trips a Blob through JSON', async () => {
+    const restored = deserialize(
+      JSON.parse(JSON.stringify(await serializeAsync(makeBlob()))),
+    ) as Blob;
+    expect(restored).toBeInstanceOf(Blob);
+    expect(restored.type).toBe('image/png');
+    expect(new Uint8Array(await restored.arrayBuffer())).toEqual(blobBytes);
+  });
+
+  it('round-trips a File preserving name, type, lastModified, and bytes', async () => {
+    const restored = deserialize(
+      JSON.parse(JSON.stringify(await serializeAsync(makeFile()))),
+    ) as File;
+    expect(restored).toBeInstanceOf(File);
+    expect(restored.name).toBe('greeting.txt');
+    expect(restored.type).toBe('text/plain');
+    expect(restored.lastModified).toBe(1710000000000);
+    expect(await restored.text()).toBe('hello world');
+  });
+
+  it('round-trips Blob and File values nested in objects, arrays, Sets, and Maps', async () => {
+    const blob = makeBlob();
+    const file = makeFile();
+    const data = {
+      avatar: blob,
+      attachments: [file],
+      set: new Set([blob]),
+      map: new Map<string, Blob>([['file', file]]),
+    };
+
+    const restored = deserialize(
+      JSON.parse(JSON.stringify(await serializeAsync(data))),
+    ) as typeof data;
+
+    expect(restored.avatar).toBeInstanceOf(Blob);
+    expect(restored.attachments[0]).toBeInstanceOf(File);
+    expect([...restored.set][0]).toBeInstanceOf(Blob);
+    expect(restored.map.get('file')).toBeInstanceOf(File);
+    expect(new Uint8Array(await restored.avatar.arrayBuffer())).toEqual(blobBytes);
+    expect(await restored.attachments[0]!.text()).toBe('hello world');
+  });
+
+  it('matches serialize() for values without Blob or File', async () => {
+    const data = {
+      bytes: new Uint8Array([1, 2]),
+      n: 7n,
+      at: new Date('2026-01-01T00:00:00Z'),
+      tags: new Set(['a', 'b']),
+      index: new Map([['k', 1n]]),
+      pattern: /a+/gi,
+    };
+    expect(await serializeAsync(data)).toEqual(serialize(data));
+  });
+
+  it('throws on malformed Blob and File payloads', () => {
+    expect(() => deserialize({ __type: 'blob', value: { type: 'image/png' } })).toThrow(TypeError);
+    expect(() => deserialize({ __type: 'blob', value: { type: 1, data: 'AA==' } })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      deserialize({
+        __type: 'file',
+        value: { type: 'text/plain', name: 'a.txt', data: 'AA==' },
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      deserialize({
+        __type: 'file',
+        value: {
+          type: 'text/plain',
+          name: 'a.txt',
+          lastModified: 'yesterday',
+          data: 'AA==',
+        },
+      }),
+    ).toThrow(TypeError);
   });
 });

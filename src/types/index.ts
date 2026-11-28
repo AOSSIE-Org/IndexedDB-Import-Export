@@ -40,6 +40,8 @@ export const SERIALIZATION_TAGS = {
   REG_EXP: 'regex',
   TYPED_ARRAY: 'typed_array',
   OBJECT: 'object',
+  BLOB: 'blob',
+  FILE: 'file',
 } as const;
 
 /**
@@ -55,6 +57,8 @@ export const SERIALIZATION_TAGS = {
  * - `"map"` — Map (value is an array of serialized `[key, value]` pairs)
  * - `"regex"` — RegExp (value is `{ source, flags }`)
  * - `"object"` — escaped plain object that has its own `__type` key (value is its serialized fields)
+ * - `"blob"` — Blob (value is `{ type, data }`, with `data` base64-encoded)
+ * - `"file"` — File (value is `{ type, name, lastModified, data }`, with `data` base64-encoded)
  */
 export interface TaggedValue {
   __type: string;
